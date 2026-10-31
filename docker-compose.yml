@@ -28,7 +28,7 @@ services:
       # 并发测试需要较多连接
       - --max-connections=300
     ports:
-      - "3306:3306"
+      - "13306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
       # 初始化脚本按文件名顺序执行（官方镜像行为）

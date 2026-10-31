@@ -11,9 +11,17 @@ FROM maven:3.9-eclipse-temurin-21 AS builder
 WORKDIR /build
 
 # 先只拷 pom，利用 Docker 层缓存：pom 没变就不重复下载依赖
+# 注意：父 pom 的 <modules> 声明了全部 7 个模块，Maven 解析聚合工程时
+# 要求所有被声明模块的 pom.xml 必须存在（即使 -pl 只构建其中两个），
+# 所以必须把 7 个 pom 全部拷入，否则报 "Child module does not exist"。
 COPY pom.xml .
 COPY smart-common/pom.xml smart-common/
 COPY smart-quality/pom.xml smart-quality/
+COPY smart-gateway/pom.xml smart-gateway/
+COPY smart-system/pom.xml smart-system/
+COPY smart-product/pom.xml smart-product/
+COPY smart-production/pom.xml smart-production/
+COPY smart-inventory/pom.xml smart-inventory/
 
 # 预下载依赖（失败不阻断，后续 build 还会再解析一次）
 RUN mvn -B -q -pl smart-common,smart-quality -am dependency:go-offline || true
