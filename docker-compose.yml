@@ -1,0 +1,249 @@
+# =====================================================================
+# Smart-Manufacturing 一键部署编排
+#
+# 用法：
+#   docker compose up -d --build          # 构建并启动全部
+#   docker compose logs -f smart-product   # 查看某服务日志
+#   docker compose down                    # 停止（保留数据卷）
+#   docker compose down -v                 # 停止并删除数据（重跑初始化脚本用）
+#
+# 启动顺序：mysql/redis/rabbitmq/nacos（健康检查通过）→ 初始化 mysql → 6 个服务
+# =====================================================================
+
+name: smart-manufacturing
+
+services:
+  # ============ 基础设施 ============
+  mysql:
+    image: mysql:8.0
+    container_name: mes-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+      # 并发测试需要较多连接
+      - --max-connections=300
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 初始化脚本按文件名顺序执行（官方镜像行为）
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_PASSWORD:-123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: mes-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: mes-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # 管理台 http://localhost:15672
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+
+  nacos:
+    image: nacos/nacos-server:v2.3.2
+    container_name: mes-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone
+      SPRING_DATASOURCE_PLATFORM: embedded
+      # 演示环境关闭鉴权；生产必须开启并配置 token
+      NACOS_AUTH_ENABLE: "false"
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+    ports:
+      - "8848:8848"   # 控制台 http://localhost:8848/nacos
+      - "9848:9848"   # gRPC（2.x 客户端需要）
+    volumes:
+      - nacos-data:/home/nacos/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ============ 业务服务 ============
+  smart-gateway:
+    build:
+      context: .
+      dockerfile: smart-gateway/Dockerfile
+    container_name: mes-gateway
+    restart: unless-stopped
+    environment:
+      NACOS_ADDR: nacos:8848
+      SYSTEM_SERVICE_URL: http://smart-system:9001
+      PRODUCT_SERVICE_URL: http://smart-product:9002
+      PRODUCTION_SERVICE_URL: http://smart-production:9003
+      INVENTORY_SERVICE_URL: http://smart-inventory:9004
+      QUALITY_SERVICE_URL: http://smart-quality:9005
+      JWT_SECRET: ${JWT_SECRET:-smart-manufacturing-mes-jwt-secret-key-please-change-in-production-2025}
+      TZ: Asia/Shanghai
+    ports:
+      - "9000:9000"
+    depends_on:
+      nacos:
+        condition: service_healthy
+      smart-system:
+        condition: service_started
+      smart-product:
+        condition: service_started
+      smart-production:
+        condition: service_started
+      smart-inventory:
+        condition: service_started
+      smart-quality:
+        condition: service_started
+
+  smart-system:
+    build:
+      context: .
+      dockerfile: smart-system/Dockerfile
+    container_name: mes-system
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:-smart-manufacturing-mes-jwt-secret-key-please-change-in-production-2025}
+      TZ: Asia/Shanghai
+    ports:
+      - "9001:9001"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+
+  smart-product:
+    build:
+      context: .
+      dockerfile: smart-product/Dockerfile
+    container_name: mes-product
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      NACOS_ADDR: nacos:8848
+      TZ: Asia/Shanghai
+    ports:
+      - "9002:9002"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+
+  smart-production:
+    build:
+      context: .
+      dockerfile: smart-production/Dockerfile
+    container_name: mes-production
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      NACOS_ADDR: nacos:8848
+      PRODUCT_SERVICE_URL: http://smart-product:9002
+      # 若无 RabbitMQ 可置 false（outbox 仍落库，业务不受影响）
+      SMART_MQ_ENABLED: "true"
+      TZ: Asia/Shanghai
+    ports:
+      - "9003:9003"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+      smart-product:
+        condition: service_started
+
+  smart-inventory:
+    build:
+      context: .
+      dockerfile: smart-inventory/Dockerfile
+    container_name: mes-inventory
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      NACOS_ADDR: nacos:8848
+      REDIS_HOST: redis
+      TZ: Asia/Shanghai
+    ports:
+      - "9004:9004"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+
+  smart-quality:
+    build:
+      context: .
+      dockerfile: smart-quality/Dockerfile
+    container_name: mes-quality
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      NACOS_ADDR: nacos:8848
+      TZ: Asia/Shanghai
+    ports:
+      - "9005:9005"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
+  nacos-data:

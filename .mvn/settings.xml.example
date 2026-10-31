@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Maven 配置模板（供特殊网络/受限环境使用）
+
+  ⚠️ 正常情况不需要本文件。只有当你满足以下条件时才需要复制成 settings.xml：
+
+    1. 用户目录 ~/.m2/repository 【不可写】（如受限沙箱/只读挂载），
+       Maven 写 _remote.repositories 时会抛 AccessDeniedException；
+    2. 或者直连 Maven 仓库失败，需要走本地 HTTP 代理。
+
+  使用方式：
+    cp .mvn/settings.xml.example .mvn/settings.xml
+    # 按需修改下面的 localRepository 路径与代理端口
+    mvn -s .mvn/settings.xml clean package
+
+  注意：settings.xml 是【本机配置】，已被 .gitignore 排除，不要提交。
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <!--
+    可写的本地仓库位置。
+    - 默认情况可以删掉这一行（用 ~/.m2/repository）
+    - 若 ~/.m2 只读：先把它复制到工作区（约 0.7GB），再指向副本：
+        robocopy "$env:USERPROFILE\.m2\repository" ".mvn\repo" /E
+        并删除副本里的 _remote.repositories 标记文件
+  -->
+  <localRepository>${user.home}/.m2/repository</localRepository>
+
+  <!-- 可选：HTTP/HTTPS 代理（按你的实际代理地址修改） -->
+  <proxies>
+    <proxy>
+      <id>local-proxy</id>
+      <active>false</active>
+      <protocol>http</protocol>
+      <host>127.0.0.1</host>
+      <port>7890</port>
+      <nonProxyHosts>localhost|127.0.0.1</nonProxyHosts>
+    </proxy>
+    <proxy>
+      <id>local-proxy-https</id>
+      <active>false</active>
+      <protocol>https</protocol>
+      <host>127.0.0.1</host>
+      <port>7890</port>
+      <nonProxyHosts>localhost|127.0.0.1</nonProxyHosts>
+    </proxy>
+  </proxies>
+
+  <!-- 可选：国内加速镜像（取消注释启用） -->
+  <!--
+  <mirrors>
+    <mirror>
+      <id>aliyun</id>
+      <name>Aliyun Public</name>
+      <url>https://maven.aliyun.com/repository/public</url>
+      <mirrorOf>central</mirrorOf>
+    </mirror>
+  </mirrors>
+  -->
+
+</settings>

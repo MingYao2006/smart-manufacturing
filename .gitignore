@@ -1,0 +1,32 @@
+# ---- Java / Maven ----
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+# 本地依赖缓存（约 0.7GB，由 ~/.m2 复制而来，绝不提交）
+.mvn/repo/
+.mvn/wrapper/
+# 本机专用 Maven 配置（含绝对路径与代理，模板见 .mvn/settings.xml.example）
+.mvn/settings.xml
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# ---- 临时与日志 ----
+.tmp/
+logs/
+*.log
+tmp/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+
+# ---- 前端 ----
+node_modules/
+dist/

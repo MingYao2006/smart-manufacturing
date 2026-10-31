@@ -1,0 +1,30 @@
+-- =====================================================================
+-- Smart-Manufacturing · 数据库设计通用约定
+-- 本文件不作为独立脚本执行，仅作为各 schema 脚本的约定说明
+-- =====================================================================
+
+-- 1. 每服务独立库（禁止跨库 JOIN，跨域数据用 Feign 查或冗余快照）
+--    smart_system / smart_product / smart_production / smart_inventory / smart_quality
+--
+-- 2. 业务单据必须有业务编码（order_no / batch_no / issue_no），并有唯一索引
+--    不对外暴露自增 id
+--
+-- 3. 状态流转必须有 CAS 前置条件：UPDATE ... SET status=? WHERE id=? AND status=?
+--
+-- 4. 账本表只增不改：inventory_transaction / quality_record 禁止 UPDATE / DELETE
+--
+-- 5. 有意反范式：单据冗余存名称/规格快照，防止主数据变更影响历史单据
+--
+-- 6. 逻辑删除与唯一索引的冲突：
+--    基础资料（product / material）用物理删除 → 唯一索引直接建在编码列上
+--    业务单据（production_order 等）用逻辑删除 → 唯一索引带上 is_deleted
+--
+-- 7. 数量统一 DECIMAL(18,4)：支持小数用量（如 0.05kg）；
+--    工时 DECIMAL(10,2)；损耗率 DECIMAL(6,4)
+--
+-- 8. 所有表必须有 create_time / update_time；
+--    业务单据必须有 create_by / update_by
+--
+-- 9. 引擎 InnoDB，字符集 utf8mb4（支持中文与 emoji），排序规则 utf8mb4_general_ci
+--
+-- 10. 索引命名：uk_ 唯一索引 / idx_ 普通索引 / fk_ 外键（本项目不使用物理外键）

@@ -1,0 +1,76 @@
+server:
+  port: 9000
+
+spring:
+  application:
+    name: smart-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+        group: MES_GROUP
+        fail-fast: false
+        register-enabled: ${NACOS_REGISTER:true}
+    # 路由配置
+    # ⚠️ 本机演示时 Nacos 未启动、服务未注册，故统一用 uri 直连 localhost 端口。
+    # 生产环境应改为 lb://smart-xxx 走服务发现 + 负载均衡。
+    gateway:
+      routes:
+        - id: smart-system
+          uri: ${SYSTEM_SERVICE_URL:http://127.0.0.1:9001}
+          predicates:
+            - Path=/system/**
+          filters:
+            - StripPrefix=1
+        - id: smart-product
+          uri: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
+          predicates:
+            - Path=/product-service/**
+          filters:
+            - StripPrefix=1
+        - id: smart-production
+          uri: ${PRODUCTION_SERVICE_URL:http://127.0.0.1:9003}
+          predicates:
+            - Path=/production-service/**
+          filters:
+            - StripPrefix=1
+        - id: smart-inventory
+          uri: ${INVENTORY_SERVICE_URL:http://127.0.0.1:9004}
+          predicates:
+            - Path=/inventory-service/**
+          filters:
+            - StripPrefix=1
+        - id: smart-quality
+          uri: ${QUALITY_SERVICE_URL:http://127.0.0.1:9005}
+          predicates:
+            - Path=/quality-service/**
+          filters:
+            - StripPrefix=1
+      # 全局默认过滤：去掉重复的 CORS 头
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE
+
+smart:
+  jwt:
+    secret: ${JWT_SECRET:smart-manufacturing-mes-jwt-secret-key-please-change-in-production-2025}
+    issuer: smart-manufacturing
+  gateway:
+    # 本地演示可置 false 关闭鉴权（默认 true，演示鉴权效果）
+    auth-enabled: ${GATEWAY_AUTH_ENABLED:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    root: INFO
+    com.smart: DEBUG
+    org.springframework.cloud.gateway: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId}] %logger{36} - %msg%n"

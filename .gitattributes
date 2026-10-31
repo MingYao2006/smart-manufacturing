@@ -1,0 +1,24 @@
+# 统一行尾为 LF，避免 Windows / Linux 协作时全文件 diff
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.jar   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.xlsx  binary
+*.docx  binary
+*.pptx  binary
+
+# Windows 脚本保留 CRLF
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Shell 脚本强制 LF（在容器/Linux 内执行）
+*.sh    text eol=lf
+
+# Mermaid / Markdown 不做特殊处理，交给 text=auto
