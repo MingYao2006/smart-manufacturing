@@ -51,6 +51,12 @@ spring:
   web:
     resources:
       add-mappings: false
+  # Redis 可选：与 smart-system 一致，地址由环境变量注入（compose 场景 REDIS_HOST=redis）
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
 
 mybatis-plus:
   mapper-locations: classpath*:mapper/**/*.xml

@@ -80,7 +80,9 @@ services:
     restart: unless-stopped
     environment:
       MODE: standalone
-      SPRING_DATASOURCE_PLATFORM: embedded
+      # 注意：此变量只认 mysql（外部库）；用内嵌 derby 时必须留空/删除本行。
+      # 填 "embedded" 会被当成外部库配置，导致 Nacos 连不存在的数据库而死循环。
+      # SPRING_DATASOURCE_PLATFORM: mysql
       # 演示环境关闭鉴权；生产必须开启并配置 token
       NACOS_AUTH_ENABLE: "false"
       JVM_XMS: 256m
@@ -188,6 +190,7 @@ services:
       PRODUCT_SERVICE_URL: http://smart-product:9002
       # 若无 RabbitMQ 可置 false（outbox 仍落库，业务不受影响）
       SMART_MQ_ENABLED: "true"
+      REDIS_HOST: redis
       TZ: Asia/Shanghai
     ports:
       - "9003:9003"
@@ -233,6 +236,7 @@ services:
       MYSQL_PORT: "3306"
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
       NACOS_ADDR: nacos:8848
+      REDIS_HOST: redis
       TZ: Asia/Shanghai
     ports:
       - "9005:9005"
