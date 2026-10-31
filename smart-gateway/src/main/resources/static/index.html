@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1e4b41">
+  <meta name="description" content="智能制造生产执行系统工作台：查看今日生产、工单、工序、物料与批次追溯。">
+  <title>智造执行 MES · 今日生产</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#app">跳到主要内容</a>
+
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="i-today" viewBox="0 0 24 24">
+      <path d="M4 5.5h16v14H4zM8 3v5M16 3v5M4 10h16M8 14h3M8 17h5"/>
+    </symbol>
+    <symbol id="i-orders" viewBox="0 0 24 24">
+      <path d="M6 3.5h12v17H6zM9 8h6M9 12h6M9 16h4"/>
+    </symbol>
+    <symbol id="i-tasks" viewBox="0 0 24 24">
+      <path d="M3.5 7h5v5h-5zM10.5 9.5H21M3.5 15h5v5h-5zM10.5 17.5H21"/>
+    </symbol>
+    <symbol id="i-material" viewBox="0 0 24 24">
+      <path d="m4 7 8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10M8 5l8 4"/>
+    </symbol>
+    <symbol id="i-trace" viewBox="0 0 24 24">
+      <path d="M5 4v5c0 3 2 4 5 4h9M5 20v-5c0-3 2-4 5-4M16 10l3 3-3 3"/>
+    </symbol>
+    <symbol id="i-quality" viewBox="0 0 24 24">
+      <path d="M12 3.5 20 7v5.5c0 4.7-3.2 7.1-8 8.5-4.8-1.4-8-3.8-8-8.5V7zM8.5 12l2.3 2.4 4.9-5"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24">
+      <path d="M12 4v16M4 12h16"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24">
+      <circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/>
+    </symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24">
+      <path d="M4 12h16M14 6l6 6-6 6"/>
+    </symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24">
+      <path d="m9 5 7 7-7 7"/>
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 24 24">
+      <path d="m5 5 14 14M19 5 5 19"/>
+    </symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24">
+      <path d="M12 3 22 21H2zM12 9v5M12 17.2v.2"/>
+    </symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24">
+      <path d="M4 7h16M4 12h16M4 17h16"/>
+    </symbol>
+  </svg>
+
+  <div class="app-shell">
+    <aside class="rail" aria-label="主导航">
+      <a class="brand" href="#/today" aria-label="智造执行 MES 首页">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40">
+            <path d="M6 10h11v9H6zM23 10h11v9H23zM6 23h11v7H6zM23 23h11v7H23z"/>
+            <path class="brand-line" d="M17 14.5h6M11.5 19v4M28.5 19v4M17 26.5h6"/>
+          </svg>
+        </span>
+        <span class="brand-type"><b>智造执行</b><small>MES</small></span>
+      </a>
+
+      <nav class="rail-nav" aria-label="工作台模块">
+        <a href="#/today" data-nav="today"><svg><use href="#i-today"/></svg><span>今日</span></a>
+        <a href="#/orders" data-nav="orders"><svg><use href="#i-orders"/></svg><span>工单</span></a>
+        <a href="#/tasks" data-nav="tasks"><svg><use href="#i-tasks"/></svg><span>工序</span></a>
+        <a href="#/materials" data-nav="materials"><svg><use href="#i-material"/></svg><span>物料</span></a>
+        <a href="#/trace" data-nav="trace"><svg><use href="#i-trace"/></svg><span>追溯</span></a>
+        <a href="#/quality" data-nav="quality"><svg><use href="#i-quality"/></svg><span>质检</span></a>
+      </nav>
+
+      <div class="rail-foot">
+        <span class="rail-rule"></span>
+        <button class="rail-help" type="button" data-action="open-connection" aria-label="接口连接设置">
+          <span class="connection-dot" id="rail-connection-dot"></span>
+          <span>接口</span>
+        </button>
+        <span class="rail-version">v1.0</span>
+      </div>
+    </aside>
+
+    <main class="workbench">
+      <header class="topbar">
+        <div class="plant">
+          <span class="plant-pin" aria-hidden="true"></span>
+          <div class="plant-copy">
+            <strong>松江一厂</strong>
+            <span>总装车间 / 装配一线</span>
+          </div>
+        </div>
+
+        <div class="topbar-meta">
+          <button class="connection-pill" id="connection-button" type="button" data-action="open-connection">
+            <span class="connection-dot"></span>
+            <span id="connection-label">演示数据</span>
+          </button>
+          <div class="shift-clock" aria-label="当前班次与时间">
+            <time id="live-clock">--:--:--</time>
+            <span id="shift-label">早班 08:00–16:00</span>
+          </div>
+          <button class="account" id="account-button" type="button" aria-haspopup="menu" aria-expanded="false">
+            <span class="account-avatar" aria-hidden="true">张</span>
+            <span class="account-copy"><b id="account-name">张计划</b><small id="account-role">生产计划员</small></span>
+            <svg><use href="#i-chevron"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div id="app" class="view" tabindex="-1"></div>
+    </main>
+
+    <nav class="mobile-nav" aria-label="移动端导航">
+      <a href="#/today" data-nav="today"><svg><use href="#i-today"/></svg><span>今日</span></a>
+      <a href="#/orders" data-nav="orders"><svg><use href="#i-orders"/></svg><span>工单</span></a>
+      <a href="#/tasks" data-nav="tasks"><svg><use href="#i-tasks"/></svg><span>工序</span></a>
+      <a href="#/materials" data-nav="materials"><svg><use href="#i-material"/></svg><span>物料</span></a>
+      <a href="#/trace" data-nav="trace"><svg><use href="#i-trace"/></svg><span>追溯</span></a>
+      <a href="#/quality" data-nav="quality"><svg><use href="#i-quality"/></svg><span>质检</span></a>
+    </nav>
+  </div>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="drawer-title">
+    <div class="drawer-head">
+      <div>
+        <p class="drawer-kicker" id="drawer-kicker"></p>
+        <h2 id="drawer-title"></h2>
+      </div>
+      <button class="icon-button" type="button" data-action="close-drawer" aria-label="关闭详情">
+        <svg><use href="#i-close"/></svg>
+      </button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+
+  <div class="modal-root" id="modal-root" hidden>
+    <div class="modal-backdrop" data-action="close-modal"></div>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <header class="modal-head">
+        <div>
+          <p class="modal-kicker" id="modal-kicker"></p>
+          <h2 id="modal-title"></h2>
+        </div>
+        <button class="icon-button" type="button" data-action="close-modal" aria-label="关闭对话框">
+          <svg><use href="#i-close"/></svg>
+        </button>
+      </header>
+      <div class="modal-body" id="modal-body"></div>
+    </section>
+  </div>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
+  <noscript>
+    <div class="noscript">此工作台需要启用 JavaScript 才能读取工单与工序数据。</div>
+  </noscript>
+
+  <script src="./data.js"></script>
+  <script src="./api.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

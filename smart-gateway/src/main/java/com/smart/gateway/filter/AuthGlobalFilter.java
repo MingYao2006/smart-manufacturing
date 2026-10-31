@@ -49,6 +49,8 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
     /** 免登录白名单：登录接口、各服务的文档与健康检查 */
     private static final List<String> WHITE_LIST = List.of(
             "/system/auth/login",
+            "/", "/index.html", "/app.js", "/data.js", "/api.js", "/styles.css", "/favicon.svg",
+            "/assets/**",
             "/doc.html", "/webjars/**", "/v3/api-docs/**", "/swagger-resources/**",
             "/favicon.ico", "/actuator/health", "/actuator/info",
             "/*/doc.html", "/*/webjars/**", "/*/v3/api-docs/**",
