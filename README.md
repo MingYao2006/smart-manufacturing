@@ -154,7 +154,7 @@ MES 的价值不在于“多一个后台”，而在于及时回答四个问题�
 
 ### 明确降级或暂未实现
 
-- RabbitMQ 异步链路、Redis 相关能力、Nacos 注册发现、Docker Compose 一键启动已完成配置或代码，但当前本地环境未做端到端验证。
+- Docker Compose 一键启动**已端到端实测通过**（2026-10-31，Windows + Docker Desktop：10 个容器全部 healthy，`FullChainDemo` 50 检查点全过）；RabbitMQ、Redis、Nacos 容器链路就绪且连接正常（RabbitMQ 消息投递专项未单独验证）。
 - 质检在独立的质量服务中，工序与质检通过 `WAIT_INSPECTION` 状态协同，不使用跨服务分布式事务。
 - 角色写入 JWT，但尚未在接口层做 `@PreAuthorize` 级 RBAC。
 - 工作台是原生 HTML / CSS / JS，不是 Vue / Vite 工程。
@@ -386,7 +386,7 @@ docker compose up -d --build
 
 Compose 会启动 MySQL、Redis、RabbitMQ、Nacos 和 6 个应用服务，MySQL 首次创建数据卷时自动按顺序执行 `sql/` 下的初始化脚本。
 
-> 说明：编排文件和 Dockerfile 已提供，但当前开发环境没有运行 Docker 守护进程，因此未做端到端实跑。若数据卷已存在，初始化脚本不会再次执行。
+> 说明：编排与 Dockerfile 已于 2026-10-31 端到端实测通过（首次实跑踩中的 4 个坑已修复并记入 [`docs/09-部署文档.md`](docs/09-部署文档.md) §6.7）。MySQL 映射宿主机 **13306** 端口以避开本机 MySQL 服务；初始化脚本仅在数据卷首次创建时执行，改表结构需 `docker compose down -v`。
 
 启动完成后打开 **http://localhost:9000/**。
 
@@ -521,6 +521,7 @@ python -m http.server 4173 --directory smart-gateway/src/main/resources/static
 | 网关静态资源 | **HTTP 200** | `/`、`/styles.css`、`/app.js` 可正常加载 |
 | 工作台回归 | **通过** | 报工、质检门禁、工单创建/下达、追溯、登录错误均有浏览器验收 |
 | 移动端布局 | **通过** | 390px 视口无横向溢出，导航切换为底部栏 |
+| Docker Compose 全套部署 | **10 容器全部 healthy** | 2026-10-31 Windows + Docker Desktop 4.78，`up -d --build` 一次拉起，`FullChainDemo` 经网关 50/50 通过 |
 
 复现核心验证：
 
@@ -528,8 +529,9 @@ python -m http.server 4173 --directory smart-gateway/src/main/resources/static
 # 127 个单元测试
 mvn test
 
-# 完整闭环（需要先启动 6 个服务）
-java demo/FullChainDemo.java
+# 完整闭环（需要先启动 6 个服务；单文件模式需把 Jackson 加入 classpath，
+# 否则报"程序包com.fasterxml.jackson.databind不存在"）
+java -cp ".mvn/repo/com/fasterxml/jackson/core/jackson-databind/2.17.3/jackson-databind-2.17.3.jar;.mvn/repo/com/fasterxml/jackson/core/jackson-core/2.17.3/jackson-core-2.17.3.jar;.mvn/repo/com/fasterxml/jackson/core/jackson-annotations/2.17.1/jackson-annotations-2.17.1.jar" demo/FullChainDemo.java
 
 # 库存并发：100 线程，物料 1，每次预留 1，预期成功 100 次
 java perf-test/PerfInventoryConcurrency.java 100 1 1 100
@@ -547,7 +549,7 @@ java perf-test/PerfInventoryConcurrency.java 100 1 1 100
 4. **质检与生产不在同一事务：**两者位于不同服务，通过 `WAIT_INSPECTION` 状态协同；这是有意选择，不是强一致事务。
 5. **没有接口级 RBAC：**角色已建模并写入 JWT，但接口尚未使用 `@PreAuthorize` 做细粒度授权。
 6. **定时任务缺少分布式锁：**多实例部署时，outbox 投递和对账任务可能重复执行；当前单机演示无影响，生产环境需要选主或分布式锁。
-7. **部分基础设施未端到端验证：**RabbitMQ 真实投递、Redis 能力、Nacos 注册发现和 Docker Compose 一键启动受本地环境限制，仅完成代码、配置或局部验证。
+7. **部署实测环境为 Windows + Docker Desktop**：Docker Compose 全套已端到端验证通过（2026-10-31）；Linux 服务器直装环境尚未实测，迁移时注意路径与资源限制差异。
 8. **前端为原生实现：**当前工作是零构建依赖的 HTML / CSS / JS，不是 Vue / Vite SPA，也没有完整的产品、BOM、工艺维护表单。
 9. **不是可直接商用的生产系统：**缺少审计、数据权限、灰度发布、监控告警、备份恢复、压测和完整的安全加固。
 
