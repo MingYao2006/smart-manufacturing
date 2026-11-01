@@ -39,6 +39,11 @@
     ordersPage: { current: 1, size: 10, total: 0, pages: 0 },
     orderStatusCounts: null,
     orderExtras: {},
+    // 派工候选人：live 模式来自 GET /system/user/list，演示模式取自演示数据集
+    users: [],
+    usersState: { loading: false, loaded: false, error: '' },
+    // 当前抽屉展示的工序任务 id，用于异步加载候选人后重渲染抽屉
+    drawerTaskId: null,
     sync: { running: false, error: '', syncedAt: null, sources: {} }
   };
 
@@ -58,6 +63,29 @@
     6: [['CLOSED', '关闭工单', 'dark']],
     7: [],
     8: []
+  };
+
+  // 与 smart-production WorkTaskStatus.TRANSITIONS 保持一致：
+  // 1待开始→{2,5} 2进行中→{3,4,6} 3暂停→{2} 6待质检→{4,2} 4/5 终态
+  const TASK_TRANSITIONS = {
+    1: [2, 5],
+    2: [3, 4, 6],
+    3: [2],
+    6: [4, 2],
+    4: [],
+    5: []
+  };
+
+  // 工序状态动作：action → 目标状态、按钮文案、按钮变体
+  // 注意：target 6（待质检）由报工报满自动进入，没有手工按钮；
+  //      target 5（跳过）需要权限，前端不提供入口，与后端设计一致。
+  const TASK_ACTION_META = {
+    start: { label: '开始工序', variant: '', target: 2 },
+    pause: { label: '暂停', variant: '', target: 3 },
+    resume: { label: '恢复', variant: 'primary', target: 2 },
+    complete: { label: '完成工序', variant: 'primary', target: 4 },
+    pass: { label: '质检放行', variant: 'primary', target: 4 },
+    reject: { label: '退回返工', variant: 'danger', target: 2 }
   };
 
   const iconPaths = {
@@ -532,27 +560,54 @@
     `;
   }
 
+  // 按 WorkTaskStatus 迁移表推导可执行的工序动作，而不是写死状态分支。
+  // 这样后端迁移表变化时，前端只需同步 TASK_TRANSITIONS 一处。
+  function taskActionList(task) {
+    const status = Number(task?.status);
+    const allowed = TASK_TRANSITIONS[status] || [];
+    const actions = [];
+
+    // 1 待开始 → 2 进行中（前道工序未完成时禁用而不是隐藏，让用户看到原因）
+    if (status === 1 && allowed.includes(2)) actions.push('start');
+    // 2 进行中 → 3 暂停
+    if (status === 2 && allowed.includes(3)) actions.push('pause');
+    // 3 暂停 → 2 恢复
+    if (status === 3 && allowed.includes(2)) actions.push('resume');
+    // 2 进行中 → 4 完成
+    if (status === 2 && allowed.includes(4)) actions.push('complete');
+    // 6 待质检 → 4 放行 / 2 返工；仅质检点工序会进入该状态，这里显式再判一次
+    if (status === 6 && Number(task?.isInspection) === 1) {
+      if (allowed.includes(4)) actions.push('pass');
+      if (allowed.includes(2)) actions.push('reject');
+    }
+    return actions;
+  }
+
   function taskButtons(task, theme = 'dark') {
     if (!task) return '';
     const buttonClass = theme === 'dark' ? 'button ghost-light small' : 'button small';
-    const actions = [];
-    if (task.status === 1) {
-      const canStart = canTaskStart(task);
-      actions.push(['start-task', canStart ? '开始工序' : '前道未完成', '', !canStart]);
+    const status = Number(task.status);
+    const tokens = taskActionList(task);
+
+    // 报工是产出数据的动作而非状态迁移，但服务端同样只允许 IN_PROGRESS(2) 报工
+    if (status === 2) {
+      const completeIndex = tokens.indexOf('complete');
+      if (completeIndex >= 0) tokens.splice(completeIndex, 0, 'report');
+      else tokens.push('report');
     }
-    if (task.status === 2) {
-      actions.push(['pause-task', '暂停', '']);
-      actions.push(['report-task', '提交报工', 'dark']);
-      actions.push(['complete-task', '完成工序', 'primary']);
-    }
-    if (task.status === 3) actions.push(['resume-task', '恢复', 'primary']);
-    if (task.status === 6) {
-      actions.push(['reject-task', '退回返工', 'danger']);
-      actions.push(['pass-task', '质检放行', 'primary']);
-    }
-    return actions.map(([action, label, variant, disabled]) => `
-      <button class="${buttonClass} ${variant}" type="button" data-action="${action}" data-task="${task.id}" ${disabled ? 'disabled title="前道工序尚未完成，不能开始"' : ''}>${label}</button>
-    `).join('');
+
+    return tokens.map((token) => {
+      if (token === 'report') {
+        return `<button class="${buttonClass} dark" type="button" data-action="report-task" data-task="${task.id}">提交报工</button>`;
+      }
+      const meta = TASK_ACTION_META[token];
+      if (!meta) return '';
+      if (token === 'start') {
+        const canStart = canTaskStart(task);
+        return `<button class="${buttonClass}" type="button" data-action="start-task" data-task="${task.id}" ${canStart ? '' : 'disabled title="前道工序尚未完成，不能开始"'}>${canStart ? meta.label : '前道未完成'}</button>`;
+      }
+      return `<button class="${buttonClass} ${meta.variant}" type="button" data-action="${token}-task" data-task="${task.id}">${meta.label}</button>`;
+    }).join('');
   }
 
   function canTaskStart(task) {
@@ -2201,6 +2256,7 @@
     if (!drawer.classList.contains('is-open')) return;
     drawer.classList.remove('is-open');
     drawer.setAttribute('aria-hidden', 'true');
+    state.drawerTaskId = null;
     syncOverlayState();
     lastFocused?.focus?.({ preventScroll: true });
   }
@@ -2259,8 +2315,102 @@
         </div>
         <div class="drawer-callout">状态流转由服务端状态机校验。重复点击或并发操作只允许一个请求成功，失败时会返回冲突提示。</div>
       </div>
+      ${dispatchBlock(task)}
     `;
+    state.drawerTaskId = task.id;
     openDrawer(task.orderNo || '工序任务', task.stepName, body);
+    if (state.mode === 'live' && !state.usersState.loaded && !state.usersState.loading) {
+      loadUsers();
+    }
+  }
+
+  // 派工候选人：live 走 GET /system/user/list；演示模式取自演示数据集里已出现的操作人
+  function dispatchCandidates() {
+    if (state.mode === 'live') {
+      // loadUsers 已过滤 status=1，这里再过滤一次作为纵深防御，避免停用账号被派工
+      return state.users.filter((user) => Number(user.status) === 1).map((user) => ({
+        value: String(user.id),
+        name: user.realName || user.username,
+        hint: Array.isArray(user.roles) && user.roles.length ? user.roles.join(' / ') : ''
+      }));
+    }
+    const names = new Set();
+    Object.values(state.tasksByOrder).forEach((list) => {
+      (list || []).forEach((task) => {
+        if (task.operatorName) names.add(task.operatorName);
+      });
+    });
+    if (state.user?.realName) names.add(state.user.realName);
+    return [...names].map((name) => ({ value: name, name, hint: '演示数据集' }));
+  }
+
+  // 派工表单：只有仍需人操作的工序（待开始 / 进行中 / 暂停）才需要派工
+  function dispatchBlock(task) {
+    const status = Number(task.status);
+    if (![1, 2, 3].includes(status)) return '';
+    const candidates = dispatchCandidates();
+    const loading = state.mode === 'live' && state.usersState.loading;
+    const loadError = state.mode === 'live' ? state.usersState.error : '';
+    const currentValue = state.mode === 'live'
+      ? (task.operatorId == null ? '' : String(task.operatorId))
+      : (task.operatorName || '');
+    const options = candidates.map((item) => `
+      <option value="${escapeHtml(item.value)}" ${item.value === currentValue ? 'selected' : ''}>${escapeHtml(item.name)}${item.hint ? ` · ${escapeHtml(item.hint)}` : ''}</option>
+    `).join('');
+    const note = loading
+      ? '正在从 /system/user/list 加载操作工列表…'
+      : (loadError
+        ? `操作工列表加载失败：${escapeHtml(loadError)}`
+        : (state.mode === 'live'
+          ? '候选人来自网关用户接口。派工只修改责任人与工作中心，不改变工序状态。'
+          : '演示模式：候选人取自演示数据集中已出现的操作人，不调用网关接口。'));
+    return `
+      <div class="drawer-block">
+        <h3>派工</h3>
+        <form data-form="dispatch" data-task="${task.id}">
+          <div class="field">
+            <label for="dispatch-operator">操作工</label>
+            <select id="dispatch-operator" name="operatorId" aria-describedby="dispatch-note" ${loading ? 'disabled' : ''}>
+              <option value="">${loading ? '加载中…' : '请选择操作工'}</option>
+              ${options}
+            </select>
+          </div>
+          <div class="field" style="margin-top:10px">
+            <label for="dispatch-center">工作中心</label>
+            <input id="dispatch-center" name="workCenter" value="${escapeHtml(task.workCenter || '')}" placeholder="不填则保持当前工作中心" aria-describedby="dispatch-note">
+          </div>
+          <div class="form-note" id="dispatch-note">${note}</div>
+          <div class="error-note" id="dispatch-error" role="alert"></div>
+          <div class="form-actions">
+            <button class="button primary" type="submit" ${loading ? 'disabled' : ''}>保存派工</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  // 加载操作工候选人（live 模式）。加载完成后若抽屉仍开着则重渲染以填入选项。
+  // 用 loaded 标志而非 users.length 判断，避免「加载失败/候选人为空」时反复重试造成死循环。
+  async function loadUsers(force = false) {
+    if (state.mode !== 'live') return;
+    if (state.usersState.loading) return;
+    if (!force && state.usersState.loaded) return;
+    state.usersState = { loading: true, loaded: false, error: '' };
+    if (state.drawerTaskId != null && drawer.classList.contains('is-open')) {
+      openTaskDrawer(state.drawerTaskId);
+    }
+    try {
+      const users = await api.listUsers();
+      const list = Array.isArray(users) ? users : [];
+      state.users = list.filter((user) => user && Number(user.status) === 1);
+      state.usersState = { loading: false, loaded: true, error: '' };
+    } catch (error) {
+      state.users = [];
+      state.usersState = { loading: false, loaded: true, error: error.message };
+    }
+    if (state.drawerTaskId != null && drawer.classList.contains('is-open')) {
+      openTaskDrawer(state.drawerTaskId);
+    }
   }
 
   function openMaterialDrawer(materialId) {
@@ -2352,19 +2502,21 @@
     }
     const remaining = Math.max(0, Number(task.planQuantity) - Number(task.reportedQuantity));
     const quantity = remaining || Number(task.planQuantity) || 0;
-    const reportNo = `RPT-${demo.dateKey}-${String(Math.floor(Math.random() * 900) + 100)}`;
+    const isLive = state.mode === 'live';
+    // 演示模式保留本地单号；live 模式必须用网关的幂等键（GET /report/new-no）
+    const reportNo = isLive ? '' : `RPT-${demo.dateKey}-${String(Math.floor(Math.random() * 900) + 100)}`;
     const body = `
       <p class="modal-intro">报工提交后，服务端会校验“合格数 + 不良数 = 报工数”，并用条件更新防止超过计划数量。</p>
       <form data-form="report" data-task="${task.id}">
         <div class="form-grid">
           <div class="field full">
             <label for="report-no">报工单号</label>
-            <input id="report-no" name="reportNo" value="${escapeHtml(reportNo)}" required>
-            <small>报工单号幂等：重复提交不会重复累加。</small>
+            <input id="report-no" name="reportNo" value="${escapeHtml(reportNo)}" ${isLive ? 'readonly placeholder="正在向网关申请报工单号…"' : ''}>
+            <small id="report-no-note">${isLive ? '由网关生成幂等键，重复提交不会重复累加。' : '报工单号幂等：重复提交不会重复累加。'}</small>
           </div>
           <div class="field">
             <label for="report-qty">报工数量</label>
-            <input id="report-qty" name="reportQuantity" type="number" min="0.0001" step="any" value="${quantity}" required>
+            <input id="report-qty" name="reportQuantity" type="number" min="0.0001" step="any" value="${quantity}" aria-describedby="report-balance-note" required>
           </div>
           <div class="field">
             <label for="report-hours">实际工时</label>
@@ -2372,19 +2524,19 @@
           </div>
           <div class="field">
             <label for="report-qualified">合格数量</label>
-            <input id="report-qualified" name="qualifiedQuantity" type="number" min="0" step="1" value="${quantity}" required>
+            <input id="report-qualified" name="qualifiedQuantity" type="number" min="0" step="1" value="${quantity}" aria-describedby="report-balance-note" required>
           </div>
           <div class="field">
             <label for="report-defect">不良数量</label>
-            <input id="report-defect" name="defectQuantity" type="number" min="0" step="1" value="0" required>
+            <input id="report-defect" name="defectQuantity" type="number" min="0" step="1" value="0" aria-describedby="report-balance-note" required>
           </div>
           <div class="field full">
             <label for="report-remark">报工备注</label>
             <input id="report-remark" name="remark" placeholder="可选：记录异常或交接信息">
           </div>
         </div>
-        <div class="form-note" id="report-balance-note">合格数 + 不良数必须等于报工数。当前计划剩余 ${formatNumber(remaining)}。</div>
-        <div class="error-note" id="report-error"></div>
+        <div class="form-note" id="report-balance-note">合格数 ${formatNumber(quantity)} + 不良数 0 = 报工数 ${formatNumber(quantity)}。当前计划剩余 ${formatNumber(remaining)}。</div>
+        <div class="error-note" id="report-error" role="alert"></div>
         <div class="form-actions">
           <button class="button" type="button" data-action="close-modal">取消</button>
           <button class="button primary" type="submit">提交报工</button>
@@ -2392,6 +2544,44 @@
       </form>
     `;
     showModal(`${task.stepName} · ${task.orderNo}`, '提交工序报工', body);
+    if (isLive) fillReportNo();
+  }
+
+  // live 模式向网关申请报工单号（幂等键）；失败时留空，由服务端自动生成
+  async function fillReportNo() {
+    const input = document.getElementById('report-no');
+    const note = document.getElementById('report-no-note');
+    if (!input) return;
+    try {
+      const no = await api.newReportNo();
+      if (typeof no === 'string' && no.trim()) {
+        input.value = no.trim();
+        input.readOnly = true;
+      } else if (note) {
+        note.textContent = '网关未返回报工单号，可直接提交，服务端会自动生成。';
+      }
+    } catch (error) {
+      if (note) note.textContent = `申请报工单号失败：${error.message}。可直接提交，服务端会自动生成。`;
+    }
+  }
+
+  // 报工数量平衡提示：输入时即时校验（合格数 + 不良数 = 报工数）
+  function updateReportBalance(form) {
+    const note = form.querySelector('#report-balance-note');
+    if (!note) return;
+    const qty = Number(form.elements.reportQuantity?.value || 0);
+    const qualified = Number(form.elements.qualifiedQuantity?.value || 0);
+    const defect = Number(form.elements.defectQuantity?.value || 0);
+    const sum = qualified + defect;
+    const balanced = Math.abs(sum - qty) <= 0.0001;
+    note.classList.toggle('is-invalid', !balanced);
+    note.textContent = balanced
+      ? `合格数 ${formatNumber(qualified)} + 不良数 ${formatNumber(defect)} = 报工数 ${formatNumber(qty)}，可以提交。`
+      : `合格数 ${formatNumber(qualified)} + 不良数 ${formatNumber(defect)} = ${formatNumber(sum)}，与报工数 ${formatNumber(qty)} 相差 ${formatNumber(Math.abs(sum - qty))}，不能提交。`;
+    [form.elements.reportQuantity, form.elements.qualifiedQuantity, form.elements.defectQuantity]
+      .forEach((field) => {
+        if (field) field.setAttribute('aria-invalid', balanced ? 'false' : 'true');
+      });
   }
 
   function openTransitionConfirm(orderId, target) {
@@ -2925,6 +3115,83 @@
     }
   }
 
+  // 派工提交：POST /production-service/work-task/{taskId}/dispatch
+  // 只改责任人与工作中心，不改变工序状态；失败时错误落在抽屉内的 #dispatch-error
+  async function handleDispatch(form) {
+    const taskId = form.dataset.task;
+    const task = findTask(taskId);
+    if (!task) return;
+    const data = Object.fromEntries(new FormData(form).entries());
+    const errorBox = document.getElementById('dispatch-error');
+    const button = form.querySelector('button[type="submit"]');
+    const operatorValue = String(data.operatorId || '').trim();
+    const workCenter = String(data.workCenter || '').trim();
+    const isLive = state.mode === 'live';
+
+    const fail = (message, fieldId) => {
+      if (errorBox) {
+        errorBox.textContent = message;
+        errorBox.classList.add('is-visible');
+      }
+      const field = fieldId ? document.getElementById(fieldId) : null;
+      if (field) {
+        field.setAttribute('aria-invalid', 'true');
+        field.focus({ preventScroll: true });
+      }
+    };
+
+    if (!operatorValue) {
+      fail('请先选择操作工再保存派工。', 'dispatch-operator');
+      return;
+    }
+
+    let operatorId = null;
+    let operatorName = '';
+    if (isLive) {
+      operatorId = Number(operatorValue);
+      const selected = state.users.find((user) => String(user.id) === operatorValue);
+      operatorName = selected ? (selected.realName || selected.username) : '';
+      if (!Number.isFinite(operatorId) || !operatorName) {
+        fail('操作工参数无效，请重新选择。', 'dispatch-operator');
+        return;
+      }
+    } else {
+      // 演示模式没有用户 id，直接用姓名作为标识
+      operatorName = operatorValue;
+    }
+
+    form.querySelectorAll('[aria-invalid="true"]').forEach((element) => element.removeAttribute('aria-invalid'));
+    if (errorBox) errorBox.classList.remove('is-visible');
+    button.disabled = true;
+    button.textContent = '正在保存';
+    try {
+      if (isLive) {
+        await api.dispatchTask(task.id, {
+          operatorId,
+          operatorName,
+          workCenter: workCenter || undefined
+        });
+        await refreshOrderDetail(task.orderId);
+      } else {
+        task.operatorId = operatorId;
+        task.operatorName = operatorName;
+        if (workCenter) task.workCenter = workCenter;
+        replaceTask(task);
+        render();
+      }
+      const fresh = findTask(task.id) || task;
+      showToast(`${fresh.stepName} 已派给 ${operatorName}${fresh.workCenter ? ` · ${fresh.workCenter}` : ''}。`);
+      if (drawer.classList.contains('is-open')) openTaskDrawer(task.id);
+    } catch (error) {
+      if (errorBox) {
+        errorBox.textContent = error.message;
+        errorBox.classList.add('is-visible');
+      }
+      button.disabled = false;
+      button.textContent = '保存派工';
+    }
+  }
+
   async function handleTransition(orderId, target) {
     const order = findOrder(orderId);
     if (!order) return;
@@ -3131,6 +3398,9 @@
     state.orderStatusCounts = null;
     state.orderExtras = {};
     state.loadingOrder = null;
+    state.users = [];
+    state.usersState = { loading: false, loaded: false, error: '' };
+    state.drawerTaskId = null;
     state.sync = { running: false, error: '', syncedAt: null, sources: {} };
   }
 
@@ -3388,11 +3658,18 @@
     if (formName === 'trace') handleTraceSubmission(form);
     else if (formName === 'create-order') handleCreateOrder(form);
     else if (formName === 'report') handleReport(form);
+    else if (formName === 'dispatch') handleDispatch(form);
     else if (formName === 'transition') handleTransition(form.dataset.order, form.dataset.target);
     else if (formName === 'login') handleLogin(form);
   }
 
   function handleSearchInput(event) {
+    // 报工弹窗内的数量输入：即时校验「合格 + 不良 = 报工」
+    const reportForm = event.target.closest('form[data-form="report"]');
+    if (reportForm) {
+      updateReportBalance(reportForm);
+      return;
+    }
     const input = event.target.closest('[data-input]');
     if (!input) return;
     const selectionStart = input.selectionStart;

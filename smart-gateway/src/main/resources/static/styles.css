@@ -7065,3 +7065,25 @@ a,
   color: var(--muted);
   font-size: 12px;
 }
+
+/* ========== 行内校验（派工 / 报工表单） ==========
+   错误提示贴在字段下方，并通过 aria-invalid 让输入框本身也变色，
+   避免只有顶部一条汇总错误、用户找不到哪个字段有问题。 */
+
+.form-note.is-invalid {
+  color: var(--signal);
+  background: var(--signal-soft);
+  border-left-color: var(--signal);
+}
+
+.field input[aria-invalid='true'],
+.field select[aria-invalid='true'] {
+  border-color: var(--signal);
+  background: #fff;
+}
+
+.field input[aria-invalid='true']:focus,
+.field select[aria-invalid='true']:focus {
+  outline-color: var(--signal);
+}
+
