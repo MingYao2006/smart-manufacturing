@@ -42,6 +42,30 @@
     // 派工候选人：live 模式来自 GET /system/user/list，演示模式取自演示数据集
     users: [],
     usersState: { loading: false, loaded: false, error: '' },
+    // 基础资料（只读）：产品 / 物料 / BOM / 工艺路线
+    basic: {
+      tab: 'products',       // products | materials | bom | routes
+      productQuery: '',
+      materialQuery: '',
+      productPage: { current: 1, size: 10, total: 0, pages: 0 },
+      materialPage: { current: 1, size: 10, total: 0, pages: 0 },
+      productList: [],       // 当前页产品
+      productOptions: [],    // 供 BOM / 工艺路线选择的产品下拉（一次取 200 条）
+      materialRows: [],
+      selectedProductId: null,
+      bomVersions: [],
+      activeBom: null,
+      bomTree: null,
+      bomTreeError: '',
+      requirementItems: null,
+      routes: [],
+      activeRoute: null,
+      routeSteps: null,
+      loading: false,
+      loadingLabel: '',
+      error: '',
+      loadedTabs: {}
+    },
     // 当前抽屉展示的工序任务 id，用于异步加载候选人后重渲染抽屉
     drawerTaskId: null,
     sync: { running: false, error: '', syncedAt: null, sources: {} }
@@ -234,6 +258,7 @@
       orders: 'orders',
       tasks: 'tasks',
       materials: 'materials',
+      basic: 'basic',
       trace: 'trace',
       quality: 'quality'
     };
@@ -255,7 +280,7 @@
     });
     const moreButton = document.getElementById('mobile-more-button');
     if (moreButton) {
-      const moreActive = active === 'trace' || active === 'quality';
+      const moreActive = active === 'basic' || active === 'trace' || active === 'quality';
       moreButton.classList.toggle('is-active', moreActive);
       moreButton.setAttribute('aria-label', moreActive ? '更多，当前页面在此菜单中' : '更多模块');
     }
@@ -366,6 +391,7 @@
 
   const NAV_GROUPS = {
     today: '工作台',
+    basic: '基础资料',
     orders: '生产管理',
     tasks: '生产管理',
     materials: '物料管理',
@@ -420,6 +446,7 @@
     else if (route.view === 'orders') html = renderOrders();
     else if (route.view === 'tasks') html = renderTasks();
     else if (route.view === 'materials') html = renderMaterials();
+    else if (route.view === 'basic') html = renderBasic();
     else if (route.view === 'trace') html = renderTrace();
     else if (route.view === 'quality') html = renderQuality();
     else html = renderToday();
@@ -438,6 +465,7 @@
       orders: '生产工单',
       tasks: '工序任务',
       materials: '库存与物料',
+      basic: '基础资料',
       trace: '批次追溯',
       quality: '质检任务'
     }[route.view] || '生产运营工作台';
@@ -1780,6 +1808,518 @@
     if (state.taskFilter === 'inspection') return tasks.filter((task) => task.status === 6);
     if (state.taskFilter === 'done') return tasks.filter((task) => task.status === 4);
     return tasks;
+  }
+
+  /* ==========================================================
+     基础资料（只读）：产品 / 物料 / BOM / 工艺路线
+     写入接口本期未接入，页面只做查询与下钻，不提供新建/编辑按钮。
+     ========================================================== */
+
+  let basicSearchTimer = null;
+
+  function scheduleBasicSearch(kind) {
+    window.clearTimeout(basicSearchTimer);
+    basicSearchTimer = window.setTimeout(() => {
+      if (kind === 'materials') state.basic.materialPage.current = 1;
+      else state.basic.productPage.current = 1;
+      loadBasicTab();
+    }, 350);
+  }
+
+  const VERSION_STATUS = {
+    1: ['草稿', 'tone-neutral'],
+    2: ['生效', 'tone-success'],
+    3: ['失效', 'tone-caution']
+  };
+
+  function versionPill(status) {
+    const [label, tone] = VERSION_STATUS[Number(status)] || ['未知', 'tone-neutral'];
+    return `<span class="status-pill ${tone}">${label}</span>`;
+  }
+
+  const BASIC_TABS = [
+    ['products', '产品'],
+    ['materials', '物料'],
+    ['bom', 'BOM'],
+    ['routes', '工艺路线']
+  ];
+
+  function renderBasic() {
+    const tab = state.basic.tab;
+    const tabs = BASIC_TABS.map(([value, label]) => `
+      <button class="filter-chip ${tab === value ? 'is-active' : ''}" type="button"
+        data-action="basic-tab" data-tab="${value}" aria-pressed="${tab === value}">${label}</button>
+    `).join('');
+    return `
+      ${pageHead('基础资料', '产品、物料、BOM 与工艺路线的只读视图。工单创建时会锁定这里的版本快照。')}
+      <div class="toolbar">
+        <div class="filter-set" role="group" aria-label="基础资料分类">${tabs}</div>
+        <span class="section-note" style="margin:0">只读：写入接口本期未接入</span>
+      </div>
+      ${renderBasicBody()}
+    `;
+  }
+
+  function renderBasicBody() {
+    const basic = state.basic;
+    if (basic.loading) {
+      return `<div class="empty-state"><span class="sync-spinner" aria-hidden="true"></span> 正在从网关读取${escapeHtml(basic.loadingLabel || '基础资料')}…</div>`;
+    }
+    if (basic.error) {
+      return emptyState('读取失败', basic.error,
+        '<button class="button" type="button" data-action="basic-reload">重试</button>');
+    }
+    if (basic.tab === 'products') return renderBasicProducts();
+    if (basic.tab === 'materials') return renderBasicMaterials();
+    if (basic.tab === 'bom') return renderBasicBom();
+    return renderBasicRoutes();
+  }
+
+  /* ---------- 产品 ---------- */
+
+  function renderBasicProducts() {
+    const basic = state.basic;
+    const live = state.mode === 'live';
+    const rows = live ? basic.productList : (demo.products || []);
+    const head = `
+      <div class="toolbar">
+        <label class="search-box">
+          ${icon('search')}
+          <span class="sr-only">搜索产品</span>
+          <input type="search" placeholder="搜索产品编码或名称" value="${escapeHtml(basic.productQuery)}" data-input="basic-product-search">
+        </label>
+      </div>`;
+    if (!rows.length) {
+      return `${head}${emptyState('没有匹配的产品',
+        live ? '当前条件下没有查询到产品，可清空搜索词重试。' : '演示数据集没有产品记录。')}`;
+    }
+    const body = rows.map((product) => `
+      <tr>
+        <td><strong>${escapeHtml(product.productCode)}</strong><br><small>${escapeHtml(product.productName)}</small></td>
+        <td>${escapeHtml(product.spec || '—')}</td>
+        <td>${escapeHtml(product.unit || '—')}</td>
+        <td>${escapeHtml(product.category || '—')}</td>
+        <td class="num">${product.safetyStock == null ? '—' : formatNumber(product.safetyStock)}</td>
+        <td>${product.status == null ? '<span class="status-pill tone-neutral">—</span>' : (Number(product.status) === 1 ? '<span class="status-pill tone-success">启用</span>' : '<span class="status-pill tone-caution">停用</span>')}</td>
+        <td class="table-actions">
+          <button class="button small" type="button" data-action="basic-product" data-product="${product.id}">详情</button>
+        </td>
+      </tr>
+    `).join('');
+    return `
+      ${head}
+      <section class="data-surface" aria-label="产品列表">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>产品 / 编码</th><th>规格</th><th>单位</th><th>分类</th><th>安全库存</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+        ${live ? renderBasicFoot('product', basic.productPage) : `<div class="list-foot"><span>演示数据集共 ${rows.length} 个产品；连接网关后可按页查询。</span></div>`}
+      </section>
+    `;
+  }
+
+  /* ---------- 物料（主数据） ---------- */
+
+  function renderBasicMaterials() {
+    const basic = state.basic;
+    const live = state.mode === 'live';
+    if (!live) {
+      return emptyState('演示模式不调用网关',
+        '物料主数据（编码 / 类型 / 安全库存 / 是否批次管理）由基础资料服务提供，演示数据集未内置这部分字段，连接 MES 网关后可查看。',
+        '<button class="button" type="button" data-action="open-connection">连接网关</button>');
+    }
+    const head = `
+      <div class="toolbar">
+        <label class="search-box">
+          ${icon('search')}
+          <span class="sr-only">搜索物料</span>
+          <input type="search" placeholder="搜索物料编码或名称" value="${escapeHtml(basic.materialQuery)}" data-input="basic-material-search">
+        </label>
+      </div>`;
+    if (!basic.materialRows.length) {
+      return `${head}${emptyState('没有匹配的物料', '当前条件下没有查询到物料，可清空搜索词重试。')}`;
+    }
+    const body = basic.materialRows.map((material) => `
+      <tr>
+        <td><strong>${escapeHtml(material.materialCode)}</strong><br><small>${escapeHtml(material.materialName)}</small></td>
+        <td>${escapeHtml(material.spec || '—')}</td>
+        <td>${escapeHtml(material.unit || '—')}</td>
+        <td>${escapeHtml(material.materialType || '—')}</td>
+        <td class="num">${material.safetyStock == null ? '—' : formatNumber(material.safetyStock)}</td>
+        <td>${Number(material.isBatchManaged) === 1 ? '<span class="status-pill tone-active">是</span>' : '<span class="status-pill tone-neutral">否</span>'}</td>
+        <td>${Number(material.status) === 1 ? '<span class="status-pill tone-success">启用</span>' : '<span class="status-pill tone-caution">停用</span>'}</td>
+      </tr>
+    `).join('');
+    return `
+      ${head}
+      <section class="data-surface" aria-label="物料主数据列表">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>物料 / 编码</th><th>规格</th><th>单位</th><th>类型</th><th>安全库存</th><th>批次管理</th><th>状态</th></tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+        ${renderBasicFoot('material', basic.materialPage)}
+      </section>
+    `;
+  }
+
+  /* ---------- 分页脚 ---------- */
+
+  function renderBasicFoot(kind, pageInfo) {
+    const { current, size, total, pages } = pageInfo;
+    const from = total ? (current - 1) * size + 1 : 0;
+    const to = Math.min(total, current * size);
+    const marks = pageWindow(current, pages).map((mark) => {
+      if (mark === 'gap') return '<span class="pager-gap" aria-hidden="true">…</span>';
+      const active = mark === current;
+      return `<button class="pager-btn${active ? ' is-active' : ''}" type="button" data-action="basic-page" data-kind="${kind}" data-page="${mark}"${active ? ' aria-current="page"' : ''}>${mark}</button>`;
+    }).join('');
+    const nav = pages > 1 ? `
+      <div class="pager" role="navigation" aria-label="分页">
+        <button class="pager-btn" type="button" data-action="basic-page" data-kind="${kind}" data-page="${current - 1}" ${current <= 1 ? 'disabled' : ''} aria-label="上一页">‹</button>
+        ${marks}
+        <button class="pager-btn" type="button" data-action="basic-page" data-kind="${kind}" data-page="${current + 1}" ${current >= pages ? 'disabled' : ''} aria-label="下一页">›</button>
+      </div>` : '';
+    return `
+      <div class="list-foot list-foot-pager">
+        <span>网关分页返回：第 ${from}-${to} 条 / 共 ${total} 条</span>
+        ${nav}
+      </div>
+    `;
+  }
+
+  /* ---------- BOM ---------- */
+
+  function basicProductSelector(kind) {
+    const basic = state.basic;
+    const live = state.mode === 'live';
+    const options = live ? basic.productOptions : (demo.products || []);
+    const selected = basic.selectedProductId;
+    const list = options.map((product) => `
+      <option value="${product.id}" ${String(product.id) === String(selected) ? 'selected' : ''}>${escapeHtml(product.productCode)} · ${escapeHtml(product.productName)}</option>
+    `).join('');
+    return `
+      <div class="toolbar">
+        <label class="field" style="min-width:280px">
+          <span class="sr-only">选择产品</span>
+          <select data-input="basic-product-select" data-kind="${kind}" aria-label="选择产品">
+            <option value="">选择产品…</option>
+            ${list}
+          </select>
+        </label>
+        <span class="section-note" style="margin:0">${live ? '同一产品同时只有一个生效版本' : '演示模式：产品取自演示数据集'}</span>
+      </div>
+    `;
+  }
+
+  function renderBasicBom() {
+    const basic = state.basic;
+    const live = state.mode === 'live';
+    const selector = basicProductSelector('bom');
+    if (!basic.selectedProductId) {
+      return `${selector}${emptyState('先选择一个产品',
+        '选择产品后可查看它当前生效的 BOM 明细、多层 BOM 树以及按数量试算的物料需求。')}`;
+    }
+    if (!live) {
+      return `${selector}${emptyState('演示模式不调用网关',
+        'BOM 明细与 BOM 树由基础资料服务计算，演示数据集未内置 BOM 结构，连接 MES 网关后可查看。',
+        '<button class="button" type="button" data-action="open-connection">连接网关</button>')}`;
+    }
+    const bom = basic.activeBom;
+    const versions = basic.bomVersions || [];
+    const versionRows = versions.map((item) => `
+      <tr>
+        <td><strong>${escapeHtml(item.bomVersion)}</strong></td>
+        <td>${versionPill(item.status)}</td>
+        <td>${escapeHtml(item.effectiveDate || '—')}</td>
+        <td>${escapeHtml(item.remark || '—')}</td>
+      </tr>
+    `).join('');
+    const itemRows = (bom?.items || []).map((item) => `
+      <tr>
+        <td>${escapeHtml(item.seqNo)}</td>
+        <td><strong>${escapeHtml(item.materialCode || '')}</strong><br><small>${escapeHtml(item.materialName || '')}</small></td>
+        <td>${escapeHtml(item.materialSpec || '—')}</td>
+        <td class="num">${formatNumber(item.quantity)} ${escapeHtml(item.unit || '')}</td>
+        <td class="num">${(Number(item.lossRate || 0) * 100).toFixed(2)}%</td>
+        <td>${escapeHtml(item.remark || '—')}</td>
+      </tr>
+    `).join('');
+    const tree = basic.bomTree
+      ? `<div class="drawer-block">${renderBomTreeNodes(basic.bomTree, 1)}</div>`
+      : (basic.bomTreeError
+        ? `<div class="error-note is-visible">BOM 树展开失败：${escapeHtml(basic.bomTreeError)}</div>`
+        : '');
+    const requirementRows = (basic.requirementItems || []).map((item) => `
+      <tr>
+        <td><strong>${escapeHtml(item.materialCode || '')}</strong><br><small>${escapeHtml(item.materialName || '')}</small></td>
+        <td class="num">${formatNumber(item.quantity)}</td>
+        <td class="num">${(Number(item.lossRate || 0) * 100).toFixed(2)}%</td>
+        <td>${Number(item.isBatchManaged) === 1 ? '是' : '否'}</td>
+      </tr>
+    `).join('');
+    return `
+      ${selector}
+      <div class="toolbar">
+        <button class="button small" type="button" data-action="basic-load-tree">展开多层 BOM 树</button>
+        ${bom ? `<button class="button small" type="button" data-action="basic-load-items" data-bom="${bom.id}">查看需求素材</button>` : ''}
+        <span class="section-note" style="margin:0">BOM 与工艺路线无写入接口，本期只读</span>
+      </div>
+      ${bom ? `
+        <section class="data-surface" aria-label="当前生效 BOM">
+          <div class="list-foot" style="border-top:0"><span>当前生效：<strong>${escapeHtml(bom.bomVersion)}</strong> · 版本快照 ${escapeHtml(bom.effectiveDate || '—')}</span></div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>序</th><th>物料</th><th>规格</th><th>单位用量</th><th>损耗率</th><th>备注</th></tr></thead>
+              <tbody>${itemRows || '<tr><td colspan="6">该 BOM 没有明细</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>` : emptyState('该产品没有生效 BOM', '需要先创建并审核生效一个 BOM 版本，工单才能计算物料需求。')}
+      ${versions.length ? `
+        <section class="data-surface" aria-label="BOM 版本列表" style="margin-top:16px">
+          <div class="list-foot" style="border-top:0"><span>全部版本（${versions.length}）</span></div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>版本</th><th>状态</th><th>生效日期</th><th>变更说明</th></tr></thead>
+              <tbody>${versionRows}</tbody>
+            </table>
+          </div>
+        </section>` : ''}
+      ${tree}
+      ${requirementRows.length ? `
+        <section class="data-surface" aria-label="BOM 需求素材" style="margin-top:16px">
+          <div class="list-foot" style="border-top:0"><span>需求素材（单位用量 + 损耗率，供工单按数量试算）</span></div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>物料</th><th>单位用量</th><th>损耗率</th><th>批次管理</th></tr></thead>
+              <tbody>${requirementRows}</tbody>
+            </table>
+          </div>
+        </section>` : ''}
+    `;
+  }
+
+  function renderBomTreeNodes(nodes, depth) {
+    if (!Array.isArray(nodes) || !nodes.length) return '';
+    return `<ul style="list-style:none;margin:0;padding-left:${depth > 1 ? '16px' : '0'}">
+      ${nodes.map((node) => `
+        <li style="padding:5px 0">
+          <span class="status-pill ${node.nodeType === 'PRODUCT' ? 'tone-active' : 'tone-neutral'}">${node.nodeType === 'PRODUCT' ? '半成品' : '物料'}</span>
+          <strong style="margin-left:6px">${escapeHtml(node.code || '')}</strong>
+          <span class="muted">${escapeHtml(node.name || '')}</span>
+          <span class="muted" style="margin-left:8px">本层 ${formatNumber(node.quantity)} ${escapeHtml(node.unit || '')} · 折算 ${formatNumber(node.totalQuantity)}</span>
+          ${renderBomTreeNodes(node.children, depth + 1)}
+        </li>
+      `).join('')}
+    </ul>`;
+  }
+
+  /* ---------- 工艺路线 ---------- */
+
+  function renderBasicRoutes() {
+    const basic = state.basic;
+    const live = state.mode === 'live';
+    const selector = basicProductSelector('routes');
+    if (!basic.selectedProductId) {
+      return `${selector}${emptyState('先选择一个产品',
+        '选择产品后可查看它当前生效的工艺路线与有序工序（工序号、工作中心、标准工时、是否质检点）。')}`;
+    }
+    if (!live) {
+      return `${selector}${emptyState('演示模式不调用网关',
+        '工艺路线与工序步骤由基础资料服务提供，演示数据集未内置这部分结构，连接 MES 网关后可查看。',
+        '<button class="button" type="button" data-action="open-connection">连接网关</button>')}`;
+    }
+    const route = basic.activeRoute;
+    const steps = basic.routeSteps || route?.steps || [];
+    const stepRows = steps.map((step) => `
+      <tr>
+        <td class="num"><strong>${escapeHtml(step.stepNo)}</strong></td>
+        <td>${escapeHtml(step.stepName)}</td>
+        <td>${escapeHtml(step.workCenter || '—')}</td>
+        <td class="num">${formatNumber(step.standardHours, 2)}</td>
+        <td>${Number(step.isInspection) === 1 ? '<span class="status-pill tone-caution">质检点</span>' : '<span class="status-pill tone-neutral">—</span>'}</td>
+        <td>${escapeHtml(step.description || '—')}</td>
+      </tr>
+    `).join('');
+    const versions = basic.routes || [];
+    const versionRows = versions.map((item) => `
+      <tr>
+        <td><strong>${escapeHtml(item.routeVersion)}</strong></td>
+        <td>${versionPill(item.status)}</td>
+        <td>${escapeHtml(item.effectiveDate || '—')}</td>
+        <td>${escapeHtml(item.remark || '—')}</td>
+      </tr>
+    `).join('');
+    return `
+      ${selector}
+      <div class="toolbar">
+        ${route ? `<button class="button small" type="button" data-action="basic-load-steps" data-route="${route.id}">刷新工序</button>` : ''}
+        <span class="section-note" style="margin:0">质检点为强制门禁：工序报满后须质检合格才可流转下一道</span>
+      </div>
+      ${route ? `
+        <section class="data-surface" aria-label="当前生效工艺路线">
+          <div class="list-foot" style="border-top:0"><span>当前生效：<strong>${escapeHtml(route.routeVersion)}</strong> · ${steps.length} 道工序</span></div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>工序号</th><th>工序名称</th><th>工作中心</th><th>标准工时(h)</th><th>质检点</th><th>作业指导</th></tr></thead>
+              <tbody>${stepRows || '<tr><td colspan="6">该工艺路线没有工序</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>` : emptyState('该产品没有生效工艺路线', '没有工艺路线就无法生成工序任务，工单下达前必须先配置并生效。')}
+      ${versions.length ? `
+        <section class="data-surface" aria-label="工艺路线版本列表" style="margin-top:16px">
+          <div class="list-foot" style="border-top:0"><span>全部版本（${versions.length}）</span></div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>版本</th><th>状态</th><th>生效日期</th><th>变更说明</th></tr></thead>
+              <tbody>${versionRows}</tbody>
+            </table>
+          </div>
+        </section>` : ''}
+    `;
+  }
+
+  /* ---------- 数据加载 ---------- */
+
+  async function loadBasicTab() {
+    if (state.mode !== 'live') return;
+    const tab = state.basic.tab;
+    state.basic.loading = true;
+    state.basic.loadingLabel = { products: '产品', materials: '物料', bom: 'BOM', routes: '工艺路线' }[tab] || '基础资料';
+    state.basic.error = '';
+    render();
+    try {
+      if (tab === 'products') await loadBasicProducts();
+      else if (tab === 'materials') await loadBasicMaterials();
+      else {
+        await loadBasicProductOptions();
+        if (tab === 'bom' && state.basic.selectedProductId) await loadBasicBom(state.basic.selectedProductId);
+        if (tab === 'routes' && state.basic.selectedProductId) await loadBasicRoutes(state.basic.selectedProductId);
+      }
+    } catch (error) {
+      state.basic.error = error.message;
+    } finally {
+      state.basic.loading = false;
+      render();
+    }
+  }
+
+  async function loadBasicProducts() {
+    const basic = state.basic;
+    const result = await api.pageProducts({
+      current: basic.productPage.current,
+      size: basic.productPage.size,
+      keyword: basic.productQuery.trim() || undefined
+    });
+    basic.productList = result.records || [];
+    basic.productPage = { current: result.current, size: result.size, total: result.total, pages: result.pages };
+  }
+
+  async function loadBasicMaterials() {
+    const basic = state.basic;
+    const result = await api.pageMaterials({
+      current: basic.materialPage.current,
+      size: basic.materialPage.size,
+      keyword: basic.materialQuery.trim() || undefined
+    });
+    basic.materialRows = result.records || [];
+    basic.materialPage = { current: result.current, size: result.size, total: result.total, pages: result.pages };
+  }
+
+  async function loadBasicProductOptions() {
+    if (state.basic.productOptions.length) return;
+    const result = await api.pageProducts({ current: 1, size: 200 });
+    state.basic.productOptions = result.records || [];
+  }
+
+  async function loadBasicBom(productId) {
+    const basic = state.basic;
+    basic.bomTree = null;
+    basic.bomTreeError = '';
+    basic.requirementItems = null;
+    const [versions, active] = await Promise.allSettled([
+      api.listBomsByProduct(productId),
+      api.getActiveBom(productId)
+    ]);
+    basic.bomVersions = versions.status === 'fulfilled' && Array.isArray(versions.value) ? versions.value : [];
+    basic.activeBom = active.status === 'fulfilled' ? active.value : null;
+  }
+
+  async function loadBasicBomTree() {
+    const productId = state.basic.selectedProductId;
+    if (!productId) return;
+    state.basic.bomTreeError = '';
+    try {
+      const tree = await api.getBomTree(productId);
+      state.basic.bomTree = Array.isArray(tree) ? tree : [];
+    } catch (error) {
+      state.basic.bomTree = null;
+      state.basic.bomTreeError = error.message;
+    }
+    render();
+  }
+
+  async function loadBasicRequirementItems(bomId) {
+    try {
+      const items = await api.listBomRequirementItems(bomId);
+      state.basic.requirementItems = Array.isArray(items) ? items : [];
+      render();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function loadBasicRoutes(productId) {
+    const basic = state.basic;
+    basic.routeSteps = null;
+    basic.activeRoute = null;
+    const [versions, active] = await Promise.allSettled([
+      api.listRoutesByProduct(productId),
+      api.getActiveRoute(productId)
+    ]);
+    basic.routes = versions.status === 'fulfilled' && Array.isArray(versions.value) ? versions.value : [];
+    basic.activeRoute = active.status === 'fulfilled' ? active.value : null;
+    basic.routeSteps = basic.activeRoute?.steps || null;
+  }
+
+  // 产品详情抽屉：字段 + 关联 BOM / 工艺路线入口
+  function openProductDrawer(productId) {
+    const live = state.mode === 'live';
+    const product = live
+      ? (state.basic.productList.find((item) => String(item.id) === String(productId))
+        || state.basic.productOptions.find((item) => String(item.id) === String(productId)))
+      : (demo.products || []).find((item) => String(item.id) === String(productId));
+    if (!product) {
+      showToast('没有找到该产品。', 'error');
+      return;
+    }
+    const body = `
+      <div class="drawer-block">
+        <h3>产品主数据</h3>
+        <div class="fact-row"><span>产品编码</span><strong>${escapeHtml(product.productCode)}</strong></div>
+        <div class="fact-row"><span>产品名称</span><strong>${escapeHtml(product.productName)}</strong></div>
+        <div class="fact-row"><span>规格</span><strong>${escapeHtml(product.spec || '—')}</strong></div>
+        <div class="fact-row"><span>单位</span><strong>${escapeHtml(product.unit || '—')}</strong></div>
+        <div class="fact-row"><span>分类</span><strong>${escapeHtml(product.category || '—')}</strong></div>
+        <div class="fact-row"><span>安全库存</span><strong class="num">${product.safetyStock == null ? '—' : formatNumber(product.safetyStock)}</strong></div>
+        <div class="fact-row"><span>状态</span><strong>${product.status == null ? '—' : (Number(product.status) === 1 ? '启用' : '停用')}</strong></div>
+      </div>
+      <div class="drawer-block">
+        <h3>关联资料</h3>
+        ${live ? `
+          <p class="muted">BOM 与工艺路线在对应分页查看：切到「BOM」或「工艺路线」并选中本产品。</p>
+          <div style="display:flex;flex-wrap:wrap;gap:7px">
+            <button class="button small" type="button" data-action="basic-goto" data-tab="bom" data-product="${product.id}">查看 BOM</button>
+            <button class="button small" type="button" data-action="basic-goto" data-tab="routes" data-product="${product.id}">查看工艺路线</button>
+          </div>
+        ` : '<p class="muted">演示模式不调用网关，BOM 与工艺路线结构未内置。</p>'}
+        <div class="drawer-callout">基础资料为只读视图：本期未接入产品 / 物料 / BOM / 工艺路线的写入接口。</div>
+      </div>
+    `;
+    openDrawer(product.productCode, product.productName, body);
   }
 
   function renderTasks() {
@@ -3400,6 +3940,29 @@
     state.loadingOrder = null;
     state.users = [];
     state.usersState = { loading: false, loaded: false, error: '' };
+    state.basic = {
+      tab: 'products',
+      productQuery: '',
+      materialQuery: '',
+      productPage: { current: 1, size: 10, total: 0, pages: 0 },
+      materialPage: { current: 1, size: 10, total: 0, pages: 0 },
+      productList: [],
+      productOptions: [],
+      materialRows: [],
+      selectedProductId: null,
+      bomVersions: [],
+      activeBom: null,
+      bomTree: null,
+      bomTreeError: '',
+      requirementItems: null,
+      routes: [],
+      activeRoute: null,
+      routeSteps: null,
+      loading: false,
+      loadingLabel: '',
+      error: '',
+      loadedTabs: {}
+    };
     state.drawerTaskId = null;
     state.sync = { running: false, error: '', syncedAt: null, sources: {} };
   }
@@ -3617,6 +4180,61 @@
       case 'open-material':
         openMaterialDrawer(actionElement.dataset.material);
         break;
+      case 'basic-tab': {
+        const tab = actionElement.dataset.tab;
+        if (!BASIC_TABS.some(([value]) => value === tab)) break;
+        state.basic.tab = tab;
+        state.basic.error = '';
+        if (state.mode === 'live') {
+          loadBasicTab();
+        } else {
+          render();
+        }
+        break;
+      }
+      case 'basic-product':
+        openProductDrawer(actionElement.dataset.product);
+        break;
+      case 'basic-goto': {
+        const tab = actionElement.dataset.tab;
+        const productId = actionElement.dataset.product;
+        if (!BASIC_TABS.some(([value]) => value === tab)) break;
+        state.basic.tab = tab;
+        state.basic.selectedProductId = productId ? String(productId) : null;
+        closeDrawer();
+        if (state.mode === 'live') loadBasicTab();
+        else render();
+        break;
+      }
+      case 'basic-load-tree':
+        loadBasicBomTree();
+        break;
+      case 'basic-load-items':
+        loadBasicRequirementItems(actionElement.dataset.bom);
+        break;
+      case 'basic-load-steps':
+        if (state.basic.activeRoute) {
+          api.listRouteSteps(actionElement.dataset.route).then((steps) => {
+            state.basic.routeSteps = Array.isArray(steps) ? steps : [];
+            render();
+          }).catch((error) => showToast(error.message, 'error'));
+        }
+        break;
+      case 'basic-reload':
+        state.basic.error = '';
+        if (state.mode === 'live') loadBasicTab();
+        else render();
+        break;
+      case 'basic-page': {
+        const kind = actionElement.dataset.kind;
+        const page = Number(actionElement.dataset.page);
+        const pageInfo = kind === 'material' ? state.basic.materialPage : state.basic.productPage;
+        if (!Number.isFinite(page) || page < 1 || (pageInfo.pages && page > pageInfo.pages)) break;
+        if (kind === 'material') state.basic.materialPage.current = page;
+        else state.basic.productPage.current = page;
+        loadBasicTab();
+        break;
+      }
       case 'sample-trace':
         state.trace = clone(demo.trace);
         state.traceIsLive = false;
@@ -3684,6 +4302,28 @@
       return;
     }
     if (input.dataset.input === 'material-search') state.materialQuery = input.value;
+    if (input.dataset.input === 'basic-product-search') {
+      state.basic.productQuery = input.value;
+      if (state.mode === 'live') scheduleBasicSearch('products');
+    }
+    if (input.dataset.input === 'basic-material-search') {
+      state.basic.materialQuery = input.value;
+      if (state.mode === 'live') scheduleBasicSearch('materials');
+    }
+    if (input.dataset.input === 'basic-product-select') {
+      state.basic.selectedProductId = input.value || null;
+      state.basic.activeBom = null;
+      state.basic.bomVersions = [];
+      state.basic.bomTree = null;
+      state.basic.bomTreeError = '';
+      state.basic.requirementItems = null;
+      state.basic.activeRoute = null;
+      state.basic.routes = [];
+      state.basic.routeSteps = null;
+      if (state.mode === 'live' && state.basic.selectedProductId) loadBasicTab();
+      else render();
+      return;
+    }
     render();
     const replacement = document.querySelector(`[data-input="${input.dataset.input}"]`);
     if (replacement) {
@@ -3787,6 +4427,9 @@
     if (state.mode === 'live' && route.view === 'orders' && route.id) {
       refreshOrderDetail(Number(route.id));
     }
+    if (state.mode === 'live' && route.view === 'basic') {
+      loadBasicTab();
+    }
   });
 
   updateClock();
@@ -3798,4 +4441,6 @@
   }
   render();
   if (state.mode === 'live') syncStoredSession();
+  // 直接以 #/basic 打开时，hashchange 不会触发，这里补一次首屏加载
+  if (state.mode === 'live' && parseRoute().view === 'basic') loadBasicTab();
 })();
