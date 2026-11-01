@@ -7137,6 +7137,32 @@ html {
   background: var(--board);
 }
 
+/* ---------- 页面整体背景：车间实景图 + 浅色薄纱 ----------
+   图片本身偏浅且带标语，直接铺满会让卡片边缘和文字发花，
+   所以叠一层 0.62 → 0.86 的浅色渐变薄纱：图能看见，但不抢内容。
+   fixed 让背景在滚动时保持不动。 */
+
+body {
+  background-color: var(--board);
+  background-image:
+    linear-gradient(180deg,
+      rgba(245, 247, 251, 0.54) 0%,
+      rgba(245, 247, 251, 0.70) 42%,
+      rgba(240, 245, 252, 0.82) 100%),
+    url("./assets/app-bg.jpg");
+  background-position: center top, center top;
+  background-size: cover, cover;
+  background-repeat: no-repeat, no-repeat;
+  background-attachment: fixed, fixed;
+}
+
+@media (max-width: 820px) {
+  /* 移动端 fixed 背景滚动会卡顿，退回普通滚动 */
+  body {
+    background-attachment: scroll, scroll;
+  }
+}
+
 /* ---------- 顶部时钟：去掉窄体机械字 ---------- */
 
 .shift-clock time {
