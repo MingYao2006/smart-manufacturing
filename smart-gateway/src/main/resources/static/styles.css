@@ -7366,23 +7366,51 @@ body {
   color: var(--signal);
 }
 
-/* 工作台两栏：左栏放趋势与动态，右栏放状态 / 批次脉络 / 不良构成。
-   用两列 + 列内竖排，右栏可以塞进多个小卡片，填掉原来行高不齐留下的空隙。 */
-.dash-grid {
+/* 工作台分区：当前执行 / 班次分析 / 协同与追溯。
+   每个分区一个轻量标题，避免一堆同权重卡片平铺。 */
+.dash-section {
+  margin-top: 26px;
+}
+
+.dash-section:first-of-type {
+  margin-top: 18px;
+}
+
+.dash-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dash-section-head h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.dash-section-head p {
+  margin: 0;
+  color: var(--muted-2);
+  font-size: 12px;
+}
+
+/* 首屏行动区：随工单 + 待办事项并排 */
+.exec-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
-.dash-col {
-  display: flex;
-  flex-direction: column;
+.dash-2col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  min-width: 0;
-}
-
-.dash-row {
+  align-items: start;
   margin-top: 16px;
 }
 
@@ -7707,3 +7735,387 @@ body {
 }
 
 
+
+/* ==========================================================================
+   本轮反馈的样式调整（追加在最后，靠后定义覆盖前面的规则）
+   · 状态流水线（100% 堆叠条，可点击筛选）
+   · 待办事项卡片（首屏行动区）
+   · KPI 进度条与多单位数值排版
+   · 次级按钮「工单详情」不再是灰底灰字
+   · 去掉每张卡片的深色顶边与蓝色短线，只给行动区保留强调
+   · 中文辅助字号下限提到 12px 以上
+   · 演示提示条压缩成单行
+   ========================================================================== */
+
+/* ---------- 工单状态流水线：100% 堆叠条 ---------- */
+
+.status-stack-body {
+  padding: 14px 16px 12px;
+}
+
+.status-stack {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  background: var(--paper-deep);
+  border-radius: 999px;
+}
+
+.status-stack-seg {
+  width: var(--w);
+  min-width: 4px;
+  padding: 0;
+  background: var(--c);
+  border: 0;
+  cursor: pointer;
+  transition: filter 140ms ease;
+}
+
+.status-stack-seg:hover,
+.status-stack-seg:focus-visible {
+  filter: brightness(1.12);
+}
+
+.status-stack-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 14px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.status-stack-legend li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.status-stack-legend li i {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--swatch);
+}
+
+.status-stack-legend li span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-stack-legend li strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-stack-legend li small {
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-hint {
+  margin: 10px 0 0;
+  color: var(--muted-2);
+  font-size: 12px;
+}
+
+/* ---------- 待办事项卡片（首屏行动区） ---------- */
+
+.decision-card {
+  border-left: 3px solid var(--accent);
+}
+
+.decision-badge {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--paper-deep);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.decision-badge.is-urgent {
+  background: var(--signal-soft);
+  color: var(--signal);
+}
+
+.decision-list {
+  margin: 0;
+  padding: 4px 0 0;
+  list-style: none;
+}
+
+.decision-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.decision-item:last-child {
+  border-bottom: 0;
+}
+
+.decision-kicker {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--paper-deep);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.decision-item.is-urgent .decision-kicker {
+  background: var(--signal-soft);
+  color: var(--signal);
+}
+
+.decision-item strong {
+  display: block;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.decision-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.decision-action:hover {
+  background: #dbeafe;
+}
+
+.decision-action svg {
+  width: 13px;
+  height: 13px;
+}
+
+.decision-more {
+  display: block;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--accent);
+  font-size: 12.5px;
+  text-decoration: none;
+}
+
+/* ---------- KPI：多单位数值与目标进度条 ---------- */
+
+.kpi-value.is-dense strong {
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
+
+.kpi-progress {
+  position: relative;
+  height: 5px;
+  margin: 7px 0 5px;
+  overflow: hidden;
+  background: var(--paper-deep);
+  border-radius: 999px;
+}
+
+.kpi-progress span {
+  display: block;
+  width: var(--value);
+  height: 100%;
+  background: linear-gradient(90deg, #34d399, #10b981);
+  border-radius: inherit;
+}
+
+/* ---------- 次级操作按钮：透明底 + 浅蓝描边 + 白字 ---------- */
+
+.traveler .button.ghost-light {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(147, 197, 253, 0.75);
+  color: #fff;
+}
+
+.traveler .button.ghost-light:hover {
+  background: rgba(147, 197, 253, 0.2);
+  border-color: #bfdbfe;
+  color: #fff;
+}
+
+/* ---------- 去掉每张卡片重复的深色顶边与蓝色短线 ---------- */
+
+.dashboard-card,
+.orders-board,
+.trace-panel,
+.data-surface,
+.inventory-overview,
+.quality-note {
+  border-top: 1px solid var(--line);
+}
+
+.dashboard-card::before {
+  display: none;
+}
+
+/* 只给「首屏行动区」保留强调：待办卡片左侧已有色条 */
+
+/* ---------- 中文辅助字号下限 ---------- */
+
+.dashboard-card-copy p,
+.kpi-label,
+.kpi-note,
+.dashboard-hint,
+.dashboard-note,
+.dashboard-empty,
+.status-stack-legend li,
+.activity-item small,
+.trend-x-axis,
+.trend-y-axis,
+.chart-data,
+.trace-compact-copy small,
+.trace-compact-foot,
+.form-note,
+.decision-kicker,
+.decision-action,
+.decision-more {
+  font-size: 12.5px;
+}
+
+.activity-item .activity-kind,
+.dashboard-kicker {
+  font-size: 12px;
+}
+
+/* ---------- 演示提示条：压缩成单行并可关闭 ---------- */
+
+.demo-notice.is-compact {
+  position: static;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.demo-notice.is-compact p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.demo-notice-link {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  border-radius: 999px;
+  background: transparent;
+  color: #92400e;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.demo-notice-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #a16207;
+  cursor: pointer;
+}
+
+.demo-notice-close:hover {
+  background: rgba(180, 83, 9, 0.12);
+}
+
+.demo-notice-close svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 1180px) {
+  .exec-grid,
+  .dash-2col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .status-stack-legend {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* 趋势卡片的窗口合计说明 */
+.trend-window-note {
+  margin: 8px 16px 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent-line);
+  background: var(--paper-deep);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.trend-window-note b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+/* 数据新鲜度：最后更新时间 + 手动刷新 */
+.dashboard-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.dashboard-updated {
+  color: var(--muted-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dashboard-refresh {
+  padding: 4px 10px;
+  border: 1px solid var(--primary-border);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dashboard-refresh:hover:not(:disabled) {
+  background: #dbeafe;
+}
+
+.dashboard-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

@@ -20,6 +20,14 @@
   const state = {
     mode: api.isLive() ? 'live' : 'demo',
     user: api.state.user || demo.user,
+    // 演示提示条是否已被用户关闭（记在 localStorage，刷新后仍生效）
+    demoNoticeDismissed: (() => {
+      try {
+        return window.localStorage.getItem('mes.demoNotice.dismissed') === '1';
+      } catch (error) {
+        return false;
+      }
+    })(),
     orders: clone(demo.orders),
     tasksByOrder: clone(demo.tasksByOrder),
     inventory: clone(demo.inventory),
@@ -382,7 +390,19 @@
     document.body.classList.toggle('is-live', live);
     document.getElementById('connection-label').textContent = live ? '网关已连接' : '演示数据';
     document.getElementById('rail-connection-dot').title = live ? '网关已连接' : '演示数据';
-    document.getElementById('demo-notice').hidden = live;
+    document.getElementById('demo-notice').hidden = live || state.demoNoticeDismissed;
+  }
+
+  // 演示提示条：可关闭，关闭状态记在 localStorage，避免每次进首页都占掉一行
+  function dismissDemoNotice() {
+    state.demoNoticeDismissed = true;
+    try {
+      window.localStorage.setItem('mes.demoNotice.dismissed', '1');
+    } catch (error) {
+      /* localStorage 不可用时只在本次会话内隐藏 */
+    }
+    const notice = document.getElementById('demo-notice');
+    if (notice) notice.hidden = true;
   }
 
   function updateClock() {
@@ -715,13 +735,29 @@
     `;
   }
 
+  // 指标口径：不同计量单位不能相加（台 / 块 / 件混在一起没有业务含义），
+  // 所以按 unit 分组统计，由调用方按单位展示；跨单位的比率类指标只在单一单位内计算。
   function calculateMetrics() {
     // archived 是演示数据集里的历史完工工单，只用于趋势图，不计入今日 KPI
     const scoped = state.orders.filter((order) => !order.archived);
-    const planned = scoped.reduce((sum, order) => sum + Number(order.planQuantity || 0), 0);
-    const completed = scoped.reduce((sum, order) => sum + Number(order.completedQuantity || 0), 0);
-    const qualified = scoped.reduce((sum, order) => sum + Number(order.qualifiedQuantity || 0), 0);
-    const units = [...new Set(scoped.map((order) => order.unit).filter(Boolean))];
+    const groups = new Map();
+    scoped.forEach((order) => {
+      const unit = order.unit || '件';
+      const row = groups.get(unit) || { unit, planned: 0, completed: 0, qualified: 0, defect: 0, orders: 0 };
+      row.planned += Number(order.planQuantity || 0);
+      row.completed += Number(order.completedQuantity || 0);
+      row.qualified += Number(order.qualifiedQuantity || 0);
+      row.defect += Number(order.defectQuantity || 0);
+      row.orders += 1;
+      groups.set(unit, row);
+    });
+    const unitGroups = [...groups.values()]
+      .map((row) => ({
+        ...row,
+        firstPass: row.completed ? (row.qualified / row.completed) * 100 : 0,
+        completionRate: row.planned ? (row.completed / row.planned) * 100 : 0
+      }))
+      .sort((a, b) => b.planned - a.planned);
     const workCenters = [
       ...new Set(
         scoped
@@ -736,39 +772,59 @@
       if (![4, 5].includes(order.status)) return false;
       return relativeMinutes(order.planEndTime).risk;
     }).length;
-    const firstPass = completed ? (qualified / completed) * 100 : 0;
     return {
-      planned,
-      completed,
-      qualified,
-      firstPass,
+      unitGroups,
+      primary: unitGroups[0] || {
+        unit: '件', planned: 0, completed: 0, qualified: 0, defect: 0,
+        orders: 0, firstPass: 0, completionRate: 0
+      },
       risks,
       paused,
       inProgress,
       orderCount: scoped.length,
-      unitText: units.length ? units.join(' / ') : '件',
       workCenterCount: workCenters.length
     };
   }
 
+  // 把「按单位的量」拼成文字，例如「1,760 台 / 200 块」，绝不跨单位求和。
+  // 这里不做转义，由调用方统一 escapeHtml，避免二次转义。
+  function formatUnitAmounts(rows, key) {
+    return rows
+      .filter((row) => Number(row[key] || 0) > 0)
+      .map((row) => `${formatNumber(row[key])} ${row.unit || '件'}`)
+      .join(' / ');
+  }
+
   function renderMetrics() {
     const metrics = calculateMetrics();
-    const completionRate = Math.round((metrics.completed / Math.max(1, metrics.planned)) * 100);
+    const primary = metrics.primary;
+    const hasMultipleUnits = metrics.unitGroups.length > 1;
+    const completionPct = Math.round(primary.completionRate);
+    const unitScope = escapeHtml(primary.unit);
+
     const cards = [
       {
         tone: 'blue', icon: 'orders', label: '今日计划总量',
-        value: formatNumber(metrics.planned), unit: metrics.unitText,
-        note: `${metrics.orderCount} 张工单 · ${metrics.workCenterCount} 个工作中心`
+        // 多单位时直接列出各单位的量，不做跨单位相加
+        value: formatUnitAmounts(metrics.unitGroups, 'planned') || '0',
+        unit: '',
+        note: hasMultipleUnits
+          ? `按单位分别统计，不跨单位相加 · ${metrics.orderCount} 张工单`
+          : `${metrics.orderCount} 张工单 · ${metrics.workCenterCount} 个工作中心`
       },
       {
         tone: 'green', icon: 'tasks', label: '已完成',
-        value: formatNumber(metrics.completed), unit: `${completionRate}%`,
-        note: `距计划还差 ${formatNumber(Math.max(0, metrics.planned - metrics.completed))} ${metrics.unitText}`
+        value: formatUnitAmounts(metrics.unitGroups, 'completed') || '0',
+        unit: '',
+        note: `${unitScope}完成率 ${completionPct}%（全部工单口径）`,
+        progress: completionPct,
+        progressLabel: `目标完成 ${completionPct}%`
       },
       {
         tone: 'orange', icon: 'quality', label: '一次合格率',
-        value: metrics.firstPass.toFixed(1), unit: '%',
-        note: `合格 ${formatNumber(metrics.qualified)} / 完成 ${formatNumber(metrics.completed)}`
+        value: primary.firstPass.toFixed(1),
+        unit: `% · ${primary.unit}`,
+        note: `合格 ${formatNumber(primary.qualified)} / 完成 ${formatNumber(primary.completed)}（${unitScope}）`
       },
       {
         tone: 'purple', icon: 'alert', label: '交期风险',
@@ -778,6 +834,7 @@
           : `在制 ${metrics.inProgress} 张，暂无逾期风险`
       }
     ];
+
     return `
       <section class="kpi-grid" aria-label="生产指标">
         ${cards.map((card) => `
@@ -785,7 +842,13 @@
             <span class="kpi-icon is-${card.tone}" aria-hidden="true">${icon(card.icon)}</span>
             <div class="kpi-body">
               <p class="kpi-label">${escapeHtml(card.label)}</p>
-              <p class="kpi-value"><strong>${card.value}</strong><small>${escapeHtml(card.unit)}</small></p>
+              <p class="kpi-value${String(card.value).length > 8 ? ' is-dense' : ''}">
+                <strong>${escapeHtml(card.value)}</strong>${card.unit ? `<small>${escapeHtml(card.unit)}</small>` : ''}
+              </p>
+              ${typeof card.progress === 'number' ? `
+                <div class="kpi-progress" style="--value:${Math.max(0, Math.min(100, card.progress))}%"
+                     role="img" aria-label="${escapeHtml(card.progressLabel || '')}"><span></span></div>
+              ` : ''}
               <p class="kpi-note${card.tone === 'purple' && metrics.risks ? ' is-risk' : ''}">${escapeHtml(card.note)}</p>
             </div>
           </article>
@@ -919,6 +982,15 @@
           <span><i class="is-plan"></i>计划量</span>
           <span><i class="is-actual"></i>完工量</span>
         </div>
+        ${(() => {
+          const planSum = buckets.reduce((sum, bucket) => sum + bucket.plan, 0);
+          const actualSum = buckets.reduce((sum, bucket) => sum + bucket.actual, 0);
+          const rate = planSum ? Math.round((actualSum / planSum) * 100) : 0;
+          return `<p class="trend-window-note">
+            窗口合计：计划 <b>${formatNumber(planSum)}</b> / 完工 <b>${formatNumber(actualSum)}</b> ·
+            完工率 <b>${rate}%</b>（含窗口内已完工的历史工单，与上方「全部工单口径」不同）
+          </p>`;
+        })()}
         <details class="chart-data">
           <summary>查看趋势数据表</summary>
           <div class="chart-data-scroll">
@@ -996,46 +1068,41 @@
     } else if (!facts.length) {
       body = '<div class="dashboard-empty">当前没有工单记录。</div>';
     } else {
-      const dominant = facts[0];
-      let cursor = 0;
-      const gradient = facts.map((row, position) => {
-        const start = cursor;
+      const segments = facts.map((row) => {
         const share = total ? (row.count / total) * 100 : 0;
-        cursor += share;
-        const end = position === facts.length - 1 ? 100 : cursor;
-        return `${ORDER_STATUS_COLORS[row.code] || '#94a3b8'} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
-      }).join(', ');
+        const color = ORDER_STATUS_COLORS[row.code] || '#94a3b8';
+        return `<button type="button" class="status-stack-seg"
+                  style="--w:${share.toFixed(2)}%;--c:${color}"
+                  data-action="filter-orders" data-filter="${row.code}"
+                  title="${escapeHtml(row.label)} ${row.count} 张 · ${Math.round(share)}%（点击筛选该状态）"
+                  aria-label="${escapeHtml(row.label)} ${row.count} 张，占 ${Math.round(share)}%，点击筛选"></button>`;
+      }).join('');
       body = `
-        <div class="status-body">
-          <figure class="status-figure" aria-labelledby="status-board-caption">
-            <div class="status-donut" style="background:conic-gradient(from 0deg, ${gradient})">
-              <span class="status-donut-center">
-                <strong>${Math.round((dominant.count / Math.max(1, total)) * 100)}%</strong>
-                <small>${escapeHtml(dominant.label)}</small>
-              </span>
-            </div>
-            <figcaption id="status-board-caption" class="sr-only">
-              ${facts.map((row) => `${row.label} ${row.count} 张，占 ${Math.round((row.count / Math.max(1, total)) * 100)}%`).join('；')}
-            </figcaption>
-          </figure>
-          <ul class="status-legend">
-            ${facts.map((row) => `
-              <li>
-                <i style="--swatch:${ORDER_STATUS_COLORS[row.code] || '#94a3b8'}" aria-hidden="true"></i>
-                <span>${escapeHtml(row.label)}</span>
-                <strong>${row.count}</strong>
-                <small>${Math.round((row.count / Math.max(1, total)) * 100)}%</small>
-              </li>
-            `).join('')}
+        <div class="status-stack-body">
+          <div class="status-stack" role="group" aria-label="工单状态占比，点击可筛选">
+            ${segments}
+          </div>
+          <ul class="status-stack-legend">
+            ${facts.map((row) => {
+              const share = total ? (row.count / total) * 100 : 0;
+              return `
+                <li>
+                  <i style="--swatch:${ORDER_STATUS_COLORS[row.code] || '#94a3b8'}" aria-hidden="true"></i>
+                  <span>${escapeHtml(row.label)}</span>
+                  <strong>${row.count}</strong>
+                  <small>${Math.round(share)}%</small>
+                </li>`;
+            }).join('')}
           </ul>
+          <p class="dashboard-hint">点击任一状态条可跳到工单列表并按该状态筛选</p>
         </div>`;
     }
     return `
       <section class="dashboard-card status-card" aria-labelledby="status-board-title">
         <div class="dashboard-card-head">
           <div class="dashboard-card-copy">
-            <p class="dashboard-kicker">${icon('pie')} ORDER STATUS</p>
-            <h2 id="status-board-title">工单状态分布</h2>
+            <p class="dashboard-kicker">${icon('tasks')} ORDER PIPELINE</p>
+            <h2 id="status-board-title">工单状态流水线</h2>
             <p>${live
               ? '来自网关 /order/stats/status 的全库计数，不受列表分页影响。'
               : `演示数据集共 ${total} 张工单，按状态计数（演示模式不调用网关）。`}</p>
@@ -1219,6 +1286,22 @@
     ).format(date);
   }
 
+  // 数据新鲜度：live 模式显示最后同步时间并提供手动刷新（另每 60s 自动刷新一次）
+  function renderDataFreshness() {
+    if (state.mode !== 'live') {
+      return '<span class="dashboard-updated">演示数据 · 不会自动更新</span>';
+    }
+    const syncedAt = state.sync.syncedAt;
+    const text = syncedAt
+      ? `更新于 ${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(syncedAt)}`
+      : '尚未同步';
+    return `
+      <span class="dashboard-updated">${escapeHtml(text)}</span>
+      <button class="dashboard-refresh" type="button" data-action="refresh-activity"
+        ${state.sync.running ? 'disabled' : ''}>${state.sync.running ? '刷新中…' : '刷新'}</button>
+    `;
+  }
+
   function renderRecentActivity() {
     const items = recentActivityItems(5);
     return `
@@ -1229,7 +1312,10 @@
             <h2 id="activity-title">最近生产动态</h2>
             <p>工序、工单状态与质检判定按发生时间倒序汇总。</p>
           </div>
-          <span class="dashboard-count">${items.length} 条</span>
+          <div class="dashboard-card-actions">
+            ${renderDataFreshness()}
+            <span class="dashboard-count">${items.length} 条</span>
+          </div>
         </div>
         ${items.length ? `
           <ol class="activity-feed">
@@ -1393,27 +1479,80 @@
     `;
   }
 
+  // 待办事项（首屏行动区）：与随工单并排，计划员一进来先看到阻断项。
+  // 数据仍由 buildDecisions 推导，和顶栏铃铛共用同一份结果。
+  function renderDecisionQueue() {
+    const decisions = buildDecisions();
+    const top = decisions.slice(0, 3);
+    return `
+      <section class="dashboard-card decision-card" aria-labelledby="decision-title">
+        <div class="dashboard-card-head">
+          <div class="dashboard-card-copy">
+            <p class="dashboard-kicker">${icon('alert')} ACTIONS</p>
+            <h2 id="decision-title">待办事项</h2>
+            <p>按工单状态、工序门禁与库存可用量推导</p>
+          </div>
+          <span class="decision-badge ${decisions.length ? 'is-urgent' : ''}">${decisions.length}</span>
+        </div>
+        ${top.length ? `
+          <ul class="decision-list">
+            ${top.map((item) => `
+              <li class="decision-item${item.urgent ? ' is-urgent' : ''}">
+                <span class="decision-kicker">${escapeHtml(item.kicker)}</span>
+                <strong>${escapeHtml(item.title)}</strong>
+                <button class="decision-action" type="button"
+                  data-action="${item.action}" data-order="${item.orderId}">
+                  ${escapeHtml(item.label)} ${icon('arrow')}
+                </button>
+              </li>
+            `).join('')}
+          </ul>
+          ${decisions.length > top.length
+            ? `<a class="decision-more" href="#/tasks">还有 ${decisions.length - top.length} 项，查看全部</a>`
+            : ''}
+        ` : '<p class="dashboard-note">当前没有会阻断后道工序的待办。</p>'}
+      </section>
+    `;
+  }
+
   function renderToday() {
     const order = activeOrder();
     const createButton = `<button class="button primary" type="button" data-action="create-order">${icon('plus')} 新建工单</button>`;
     return `
-      ${pageHead('生产运营工作台', '当前班次的关键指标、在制随工单与生产动态，数据来自网关或演示数据集。', createButton)}
-      ${renderTraveler(order)}
-      ${renderMetrics()}
-      <div class="dash-grid">
-        <div class="dash-col">
-          ${renderProductionTrend()}
-          ${renderRecentActivity()}
+      ${pageHead('生产运营工作台', '先看行动，再看分析。数据来自网关或演示数据集。', createButton)}
+      <section class="dash-section" aria-labelledby="sec-exec">
+        <div class="dash-section-head">
+          <h2 id="sec-exec">当前执行</h2>
+          <p>在制随工单与需要立刻处理的阻断项</p>
         </div>
-        <div class="dash-col">
+        <div class="exec-grid">
+          ${renderTraveler(order)}
+          ${renderDecisionQueue()}
+        </div>
+      </section>
+      <section class="dash-section" aria-labelledby="sec-analysis">
+        <div class="dash-section-head">
+          <h2 id="sec-analysis">班次分析</h2>
+          <p>指标按计量单位分组统计，不跨单位相加；比率类指标统一标注口径范围</p>
+        </div>
+        ${renderMetrics()}
+        ${renderProductionTrend()}
+        <div class="dash-2col">
           ${renderOrderStatusBoard()}
-          ${renderTraceCompact()}
           ${renderDefectComposition()}
         </div>
-      </div>
-      <div class="dash-row">
-        ${renderOrderQueue()}
-      </div>
+      </section>
+      <section class="dash-section" aria-labelledby="sec-coop">
+        <div class="dash-section-head">
+          <h2 id="sec-coop">协同与追溯</h2>
+          <p>生产动态、工单队列与批次链路</p>
+        </div>
+        ${renderRecentActivity()}
+        <div class="exec-grid">
+          ${renderOrderQueue()}
+          ${renderTraceCompact()}
+        </div>
+      </section>
     `;
   }
 
@@ -4698,6 +4837,19 @@
       case 'toggle-notice':
         setNoticeOpen(document.getElementById('notice-panel').hidden);
         break;
+      case 'dismiss-demo-notice':
+        dismissDemoNotice();
+        break;
+      case 'refresh-activity':
+        if (state.mode !== 'live') {
+          showToast('演示数据不会更新，连接网关后可获取真实动态。', 'warning');
+          break;
+        }
+        if (state.sync.running) break;
+        refreshLiveData()
+          .then(() => showToast('生产动态与指标已刷新。'))
+          .catch((error) => showToast(`刷新失败：${error.message}`, 'error'));
+        break;
       case 'retry-sync':
         if (state.mode !== 'live') {
           showToast('演示数据无需同步，连接网关后可重试。', 'warning');
@@ -4742,6 +4894,11 @@
       case 'filter-orders':
         state.orderFilter = actionElement.dataset.filter;
         state.ordersPage.current = 1;
+        // 从工作台的状态流水线点进来时，先跳到工单列表再按该状态筛选
+        if (parseRoute().view !== 'orders') {
+          window.location.hash = '#/orders';
+          return;
+        }
         reloadOrderList();
         break;
       case 'orders-page': {
@@ -5081,6 +5238,16 @@
 
   updateClock();
   window.setInterval(updateClock, 1000);
+
+  // 工作台数据新鲜度：连接网关后每 60s 轮询一次（页面不可见或不在工作台时不打扰后端）。
+  // 没有 SSE/WebSocket 通道，轮询是最简单的"知道数据是否最新"的办法。
+  window.setInterval(() => {
+    if (state.mode !== 'live') return;
+    if (document.hidden) return;
+    if (state.sync.running) return;
+    if (parseRoute().view !== 'today') return;
+    refreshLiveData().catch(() => { /* 失败时保持旧数据，不打断用户 */ });
+  }, 60000);
   try {
     applyRailCollapsed(window.localStorage.getItem('mes.rail.collapsed') === '1');
   } catch (error) {

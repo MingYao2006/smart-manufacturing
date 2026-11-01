@@ -148,10 +148,13 @@
         </div>
       </header>
 
-      <div class="demo-notice" id="demo-notice" role="status" hidden>
+      <div class="demo-notice is-compact" id="demo-notice" role="status" hidden>
         <svg aria-hidden="true"><use href="#i-alert"/></svg>
-        <p><b>当前操作仅限演示，不会真实落库。</b>建单、工序流转、质检、报工都只改浏览器里的数据，刷新页面就恢复原样。要操作真实工单请先连接网关。</p>
-        <button class="button demo-notice-button" type="button" data-action="open-connection">连接网关</button>
+        <p><b>演示数据：</b>所有操作只改浏览器内存，不会落库。</p>
+        <button class="demo-notice-link" type="button" data-action="open-connection">连接网关</button>
+        <button class="demo-notice-close" type="button" data-action="dismiss-demo-notice" aria-label="关闭演示提示">
+          <svg aria-hidden="true"><use href="#i-close"/></svg>
+        </button>
       </div>
 
       <div id="app" class="view" tabindex="-1"></div>
