@@ -1358,53 +1358,36 @@
   // 待办事项卡片已按需求从工作台移除，只保留顶栏消息组件的提醒入口
   // （buildDecisions 仍被顶栏铃铛的 updateNotices 使用）。
 
-  function renderTraceOverview() {
+  // 紧凑版批次脉络：放在右栏，用一行行来源 + 成品入库合计，
+  // 不做原来的三列画布（三列布局需要 516px，右栏只有 ~380px 会被压扁）。
+  function renderTraceCompact() {
     const root = state.trace.root;
     const sources = (state.trace.tree || []).slice(0, 4);
     return `
-      <section class="trace-panel" aria-labelledby="trace-title">
-        <div class="trace-head">
-          <div class="trace-head-copy">
-            <h2 id="trace-title">批次脉络</h2>
-            <p>从供应商来料到成品批次，沿真实消耗关系回溯。演示批次已关联 ${state.trace.totalNodes} 个节点。</p>
+      <section class="dashboard-card trace-compact" aria-labelledby="trace-compact-title">
+        <div class="dashboard-card-head">
+          <div class="dashboard-card-copy">
+            <p class="dashboard-kicker">${icon('trace')} TRACE</p>
+            <h2 id="trace-compact-title">批次脉络</h2>
+            <p>成品批次 ${escapeHtml(root.batchNo || '')} 已关联 ${state.trace.totalNodes} 个节点</p>
           </div>
-          <form class="trace-search" data-form="trace">
-            ${icon('search')}
-            <label><span class="sr-only">批次号</span><input name="batchNo" value="${escapeHtml(state.traceBatch)}" autocomplete="off" aria-label="输入批次号"></label>
-            <button type="submit">追溯</button>
-          </form>
+          <a class="dashboard-link" href="#/trace">详情 ${icon('arrow')}</a>
         </div>
-        <div class="trace-canvas">
-          <div class="trace-sources">
-            ${sources.map((source) => `
-              <article class="trace-source">
-                <div class="trace-source-top">
-                  <div>
-                    <span class="trace-source-code">${escapeHtml(source.code || '')}</span>
-                    <h3>${escapeHtml(source.name || '')}</h3>
-                  </div>
-                  <span class="status-pill tone-success">已关联</span>
-                </div>
-                <p>${escapeHtml(source.supplierName || '内部批次')} · 消耗 ${formatNumber(source.edgeQuantity || 0)}</p>
-                <span class="trace-source-batch">${escapeHtml(source.batchNo || '')}</span>
-              </article>
-            `).join('')}
-          </div>
-          <div class="trace-junction" aria-hidden="true"><span>消耗合并</span></div>
-          <article class="trace-product">
-            <div>
-              <span class="trace-product-label">成品批次</span>
-              <h3>${escapeHtml(root.name || '')}</h3>
-              <code>${escapeHtml(root.batchNo || '')}</code>
-            </div>
-            <div class="trace-product-foot">
-              <div>
-                <span>本批入库</span>
-                <strong>${formatNumber(root.quantity || 0)}</strong>
+        <ul class="trace-compact-list">
+          ${sources.map((source) => `
+            <li>
+              <span class="trace-compact-dot" aria-hidden="true"></span>
+              <div class="trace-compact-copy">
+                <strong>${escapeHtml(source.name || source.code || '')}</strong>
+                <small>${escapeHtml(source.supplierName || '内部批次')} · ${escapeHtml(source.batchNo || '')}</small>
               </div>
-              <span class="trace-verified">链路完整</span>
-            </div>
-          </article>
+              <span class="trace-compact-qty">${formatNumber(source.edgeQuantity || 0)}</span>
+            </li>
+          `).join('')}
+        </ul>
+        <div class="trace-compact-foot">
+          <span>成品入库 ${escapeHtml(root.name || '')}</span>
+          <strong>${formatNumber(root.quantity || 0)}</strong>
         </div>
       </section>
     `;
@@ -1418,12 +1401,18 @@
       ${renderTraveler(order)}
       ${renderMetrics()}
       <div class="dash-grid">
-        <div class="dash-span dash-span-8">${renderProductionTrend()}</div>
-        <div class="dash-span dash-span-4">${renderOrderStatusBoard()}</div>
-        <div class="dash-span dash-span-8">${renderRecentActivity()}</div>
-        <div class="dash-span dash-span-4">${renderDefectComposition()}</div>
-        <div class="dash-span dash-span-12">${renderOrderQueue()}</div>
-        <div class="dash-span dash-span-12">${renderTraceOverview()}</div>
+        <div class="dash-col">
+          ${renderProductionTrend()}
+          ${renderRecentActivity()}
+        </div>
+        <div class="dash-col">
+          ${renderOrderStatusBoard()}
+          ${renderTraceCompact()}
+          ${renderDefectComposition()}
+        </div>
+      </div>
+      <div class="dash-row">
+        ${renderOrderQueue()}
       </div>
     `;
   }

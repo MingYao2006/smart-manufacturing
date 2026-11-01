@@ -7327,24 +7327,99 @@ html {
   color: var(--signal);
 }
 
-/* ---------- 工作台 12 栅格 ---------- */
-
+/* 工作台两栏：左栏放趋势与动态，右栏放状态 / 批次脉络 / 不良构成。
+   用两列 + 列内竖排，右栏可以塞进多个小卡片，填掉原来行高不齐留下的空隙。 */
 .dash-grid {
   display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
-.dash-span {
+.dash-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   min-width: 0;
 }
 
-.dash-span-4 { grid-column: span 4; }
-.dash-span-5 { grid-column: span 5; }
-.dash-span-7 { grid-column: span 7; }
-.dash-span-8 { grid-column: span 8; }
-.dash-span-12 { grid-column: span 12; }
+.dash-row {
+  margin-top: 16px;
+}
+
+/* 紧凑版批次脉络（右栏用） */
+.trace-compact-list {
+  margin: 0;
+  padding: 4px 0 0;
+  list-style: none;
+}
+
+.trace-compact-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.trace-compact-list li:last-child {
+  border-bottom: 0;
+}
+
+.trace-compact-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.trace-compact-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.trace-compact-copy strong {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-compact-copy small {
+  display: block;
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-compact-qty {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-compact-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--paper-deep);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trace-compact-foot strong {
+  color: var(--accent);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ---------- 生产趋势图 ---------- */
 
@@ -7569,12 +7644,8 @@ html {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .dash-span-4,
-  .dash-span-5,
-  .dash-span-7,
-  .dash-span-8,
-  .dash-span-12 {
-    grid-column: span 12;
+  .dash-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
