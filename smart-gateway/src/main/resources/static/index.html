@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#1e4b41">
-  <meta name="description" content="智能制造生产执行系统工作台：查看今日生产、工单、工序、物料与批次追溯。">
-  <title>智造执行 MES · 今日生产</title>
+  <meta name="theme-color" content="#08152e">
+  <meta name="description" content="SmartMES 生产运营工作台：查看生产指标、工单、工序任务、库存与批次追溯。">
+  <title>SmartMES · 生产运营工作台</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
 </head>
@@ -52,34 +52,51 @@
     <symbol id="i-menu" viewBox="0 0 24 24">
       <path d="M4 7h16M4 12h16M4 17h16"/>
     </symbol>
+    <symbol id="i-trend" viewBox="0 0 24 24">
+      <path d="M4 19V5M4 19h16M7 15l4-4 3 2 5-6M15 7h4v4"/>
+    </symbol>
+    <symbol id="i-pie" viewBox="0 0 24 24">
+      <path d="M12 3v9h9M12 3a9 9 0 1 0 9 9"/>
+    </symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24">
+      <path d="M3 12h4l2-6 4 12 2-6h6"/>
+    </symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24">
+      <path d="M18 15.5V10a6 6 0 1 0-12 0v5.5L4.2 18.2h15.6zM9.8 21h4.4"/>
+    </symbol>
   </svg>
 
   <div class="app-shell">
     <aside class="rail" aria-label="主导航">
-      <a class="brand" href="#/today" aria-label="智造执行 MES 首页">
+      <a class="brand" href="#/today" aria-label="SmartMES 首页">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 40 40">
-            <path d="M6 10h11v9H6zM23 10h11v9H23zM6 23h11v7H6zM23 23h11v7H23z"/>
-            <path class="brand-line" d="M17 14.5h6M11.5 19v4M28.5 19v4M17 26.5h6"/>
+          <svg viewBox="0 0 32 32">
+            <path d="M8 8h16v3.2H11.2v1.6H24V24H8v-3.2h12.8v-1.6H8z"/>
           </svg>
         </span>
-        <span class="brand-type"><b>智造执行</b><small>MES</small></span>
+        <span class="brand-type"><b>SmartMES</b></span>
       </a>
 
       <nav class="rail-nav" aria-label="工作台模块">
-        <a href="#/today" data-nav="today"><svg><use href="#i-today"/></svg><span>今日</span></a>
-        <a href="#/orders" data-nav="orders"><svg><use href="#i-orders"/></svg><span>工单</span></a>
-        <a href="#/tasks" data-nav="tasks"><svg><use href="#i-tasks"/></svg><span>工序</span></a>
-        <a href="#/materials" data-nav="materials"><svg><use href="#i-material"/></svg><span>物料</span></a>
-        <a href="#/trace" data-nav="trace"><svg><use href="#i-trace"/></svg><span>追溯</span></a>
-        <a href="#/quality" data-nav="quality"><svg><use href="#i-quality"/></svg><span>质检</span></a>
+        <p class="rail-group">工作台</p>
+        <a href="#/today" data-nav="today"><svg><use href="#i-today"/></svg><span>生产运营</span></a>
+        <p class="rail-group">生产管理</p>
+        <a href="#/orders" data-nav="orders"><svg><use href="#i-orders"/></svg><span>生产工单</span></a>
+        <a href="#/tasks" data-nav="tasks"><svg><use href="#i-tasks"/></svg><span>工序任务</span></a>
+        <p class="rail-group">物料管理</p>
+        <a href="#/materials" data-nav="materials"><svg><use href="#i-material"/></svg><span>库存与物料</span></a>
+        <p class="rail-group">质量管理</p>
+        <a href="#/quality" data-nav="quality"><svg><use href="#i-quality"/></svg><span>质检任务</span></a>
+        <a href="#/trace" data-nav="trace"><svg><use href="#i-trace"/></svg><span>批次追溯</span></a>
       </nav>
 
       <div class="rail-foot">
-        <span class="rail-rule"></span>
         <button class="rail-help" type="button" data-action="open-connection" aria-label="接口连接设置">
           <span class="connection-dot" id="rail-connection-dot"></span>
-          <span>接口</span>
+          <span>接口连接</span>
+        </button>
+        <button class="rail-collapse" type="button" data-action="toggle-rail" aria-label="收起导航栏" aria-expanded="true">
+          <svg><use href="#i-chevron"/></svg><span>收起侧栏</span>
         </button>
         <span class="rail-version">v1.0</span>
       </div>
@@ -87,12 +104,11 @@
 
     <main class="workbench">
       <header class="topbar">
-        <div class="plant">
-          <span class="plant-pin" aria-hidden="true"></span>
-          <div class="plant-copy">
-            <strong>松江一厂</strong>
-            <span>总装车间 / 装配一线</span>
-          </div>
+        <div class="crumbs">
+          <button class="crumbs-toggle" type="button" data-action="toggle-rail" aria-label="展开或收起导航栏">
+            <svg><use href="#i-menu"/></svg>
+          </button>
+          <nav class="crumb-trail" id="crumbs" aria-label="面包屑"></nav>
         </div>
 
         <div class="topbar-meta">
@@ -104,6 +120,21 @@
             <time id="live-clock">--:--:--</time>
             <span id="shift-label">早班 08:00–16:00</span>
           </div>
+          <div class="notice" id="notice-root">
+            <button class="notice-button" id="notice-button" type="button" data-action="toggle-notice"
+                    aria-expanded="false" aria-controls="notice-panel" aria-label="待办提醒">
+              <svg aria-hidden="true"><use href="#i-bell"/></svg>
+              <span class="notice-badge" id="notice-badge" hidden>0</span>
+            </button>
+            <div class="notice-panel" id="notice-panel" role="dialog" aria-label="待办提醒" hidden>
+              <header class="notice-head">
+                <h2>待办提醒</h2>
+                <span class="notice-count" id="notice-count"></span>
+              </header>
+              <div class="notice-list" id="notice-list"></div>
+              <footer class="notice-foot">网关暂无消息接口，提醒由工单、任务与库存状态实时推导。</footer>
+            </div>
+          </div>
           <button class="account" id="account-button" type="button" aria-haspopup="menu" aria-expanded="false">
             <span class="account-avatar" aria-hidden="true">张</span>
             <span class="account-copy"><b id="account-name">张计划</b><small id="account-role">生产计划员</small></span>
@@ -112,16 +143,35 @@
         </div>
       </header>
 
+      <div class="demo-notice" id="demo-notice" role="status" hidden>
+        <svg aria-hidden="true"><use href="#i-alert"/></svg>
+        <p><b>当前操作仅限演示，不会真实落库。</b>建单、工序流转、质检、报工都只改浏览器里的数据，刷新页面就恢复原样。要操作真实工单请先连接网关。</p>
+        <button class="button demo-notice-button" type="button" data-action="open-connection">连接网关</button>
+      </div>
+
       <div id="app" class="view" tabindex="-1"></div>
     </main>
 
     <nav class="mobile-nav" aria-label="移动端导航">
-      <a href="#/today" data-nav="today"><svg><use href="#i-today"/></svg><span>今日</span></a>
+      <a href="#/today" data-nav="today"><svg><use href="#i-today"/></svg><span>工作台</span></a>
       <a href="#/orders" data-nav="orders"><svg><use href="#i-orders"/></svg><span>工单</span></a>
       <a href="#/tasks" data-nav="tasks"><svg><use href="#i-tasks"/></svg><span>工序</span></a>
       <a href="#/materials" data-nav="materials"><svg><use href="#i-material"/></svg><span>物料</span></a>
-      <a href="#/trace" data-nav="trace"><svg><use href="#i-trace"/></svg><span>追溯</span></a>
-      <a href="#/quality" data-nav="quality"><svg><use href="#i-quality"/></svg><span>质检</span></a>
+      <button class="mobile-more-trigger" id="mobile-more-button" type="button" data-action="toggle-mobile-more" aria-expanded="false" aria-controls="mobile-more-menu">
+        <svg aria-hidden="true"><use href="#i-menu"/></svg>
+        <span>更多</span>
+      </button>
+    </nav>
+
+    <nav class="mobile-more-menu" id="mobile-more-menu" aria-label="更多模块" hidden>
+      <a href="#/trace" data-nav="trace">
+        <svg aria-hidden="true"><use href="#i-trace"/></svg>
+        <span><b>批次追溯</b><small>从成品回看原料与工序</small></span>
+      </a>
+      <a href="#/quality" data-nav="quality">
+        <svg aria-hidden="true"><use href="#i-quality"/></svg>
+        <span><b>质检任务</b><small>判定放行或退回返工</small></span>
+      </a>
     </nav>
   </div>
 
