@@ -66,6 +66,19 @@
       error: '',
       loadedTabs: {}
     },
+    // 库存作业（安全线 / 预留 / 领料退料 / 对账）——数据全部来自库存服务真实接口
+    inventoryOps: {
+      orderIdInput: '',
+      belowSafety: null,
+      belowSafetyError: '',
+      reservations: null,
+      reservationsError: '',
+      issues: null,
+      issuesError: '',
+      issueItems: {},
+      busy: '',
+      reconcile: null
+    },
     // 当前抽屉展示的工序任务 id，用于异步加载候选人后重渲染抽屉
     drawerTaskId: null,
     sync: { running: false, error: '', syncedAt: null, sources: {} }
@@ -445,7 +458,7 @@
     else if (route.view === 'orders' && route.id) html = renderOrderDetail(route.id);
     else if (route.view === 'orders') html = renderOrders();
     else if (route.view === 'tasks') html = renderTasks();
-    else if (route.view === 'materials') html = renderMaterials();
+    else if (route.view === 'materials') html = renderMaterials() + renderInventoryOps();
     else if (route.view === 'basic') html = renderBasic();
     else if (route.view === 'trace') html = renderTrace();
     else if (route.view === 'quality') html = renderQuality();
@@ -771,198 +784,150 @@
     return Number.isFinite(time) ? time : 0;
   }
 
-  function clampRatio(value) {
-    return Math.max(0, Math.min(1, value));
-  }
-
-  function niceMax(value) {
-    if (!Number.isFinite(value) || value <= 0) return 1;
-    const magnitude = 10 ** Math.floor(Math.log10(value));
-    const normalized = value / magnitude;
-    const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
-    return nice * magnitude;
-  }
-
-  function buildTrendSeries() {
-    const sources = state.orders
-      .filter((order) => [4, 5, 6].includes(order.status))
-      .map((order) => {
-        const start = toTimestamp(order.planStartTime);
-        const end = toTimestamp(order.planEndTime);
-        return {
-          start,
-          end: end > start ? end : start + 8 * 60 * 60 * 1000,
-          plan: Number(order.planQuantity || 0),
-          completed: Number(order.completedQuantity || 0)
-        };
-      })
-      .filter((source) => source.start && source.plan > 0);
-
-    if (!sources.length) {
-      return { points: [], max: 1, labels: [], start: 0, end: 0 };
+  // 工单状态分布：live 用 GET /order/stats/status 的全库计数（不受列表分页影响）；
+  // 演示模式用演示数据集并明确标注来源。原先的「生产趋势」折线是用线性插值
+  // 伪造的计划/完成累计曲线，后端没有时间序列接口，已移除。
+  function buildOrderStatusFacts() {
+    if (state.mode === 'live') {
+      const stats = state.orderStatusCounts;
+      if (!Array.isArray(stats)) return null;
+      return stats
+        .map((row) => ({
+          code: Number(row.status),
+          label: row.statusDesc || `状态 ${row.status}`,
+          count: Number(row.count || 0)
+        }))
+        .filter((row) => row.count > 0)
+        .sort((a, b) => b.count - a.count || a.code - b.code);
     }
-
-    const start = Math.min(...sources.map((source) => source.start));
-    const end = Math.max(...sources.map((source) => source.end));
-    const points = Array.from({ length: 5 }, (_, index) => {
-      const ratio = index / 4;
-      const time = start + (end - start) * ratio;
-      const planned = sources.reduce((sum, source) => {
-        const elapsed = (time - source.start) / Math.max(1, source.end - source.start);
-        return sum + source.plan * clampRatio(elapsed);
-      }, 0);
-      const completed = sources.reduce((sum, source) => {
-        const elapsed = (time - source.start) / Math.max(1, source.end - source.start);
-        return sum + source.completed * clampRatio(elapsed);
-      }, 0);
-      return {
-        time,
-        ratio,
-        planned: Math.round(planned),
-        completed: Math.round(completed)
-      };
+    const counts = new Map();
+    state.orders.forEach((order) => {
+      const code = Number(order.status);
+      const row = counts.get(code) || { code, label: order.statusDesc || `状态 ${code}`, count: 0 };
+      row.count += 1;
+      counts.set(code, row);
     });
-
-    return {
-      points,
-      max: niceMax(Math.max(1, ...points.flatMap((point) => [point.planned, point.completed]))),
-      labels: points.map((point) => formatTime(point.time)),
-      start,
-      end
-    };
+    return [...counts.values()].sort((a, b) => b.count - a.count || a.code - b.code);
   }
 
-  function renderProductionTrend() {
-    const series = buildTrendSeries();
-    const chartWidth = 720;
-    const chartHeight = 250;
-    const pad = { top: 18, right: 14, bottom: 16, left: 14 };
-    const plotWidth = chartWidth - pad.left - pad.right;
-    const plotHeight = chartHeight - pad.top - pad.bottom;
-    const xAt = (index) => pad.left + (plotWidth * index) / Math.max(1, series.points.length - 1);
-    const yAt = (value) => pad.top + plotHeight * (1 - clampRatio(value / series.max));
-    const planPath = series.points.map((point, index) => `${index ? 'L' : 'M'}${xAt(index).toFixed(2)},${yAt(point.planned).toFixed(2)}`).join(' ');
-    const actualPath = series.points.map((point, index) => `${index ? 'L' : 'M'}${xAt(index).toFixed(2)},${yAt(point.completed).toFixed(2)}`).join(' ');
-    const areaPath = series.points.length
-      ? `M${xAt(0).toFixed(2)},${(pad.top + plotHeight).toFixed(2)} ${actualPath.replace(/^M/, 'L')} L${xAt(series.points.length - 1).toFixed(2)},${(pad.top + plotHeight).toFixed(2)} Z`
-      : '';
-    const gridLines = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-      const y = pad.top + plotHeight * ratio;
-      return `<line x1="${pad.left}" x2="${chartWidth - pad.right}" y1="${y}" y2="${y}"/>`;
-    }).join('');
-    const yLabels = [1, 0.75, 0.5, 0.25, 0].map((ratio) => formatNumber(series.max * ratio));
-    const last = series.points[series.points.length - 1] || { planned: 0, completed: 0 };
-    const completionRate = last.planned ? Math.round((last.completed / last.planned) * 100) : 0;
-
+  function renderOrderStatusBoard() {
+    const live = state.mode === 'live';
+    const facts = buildOrderStatusFacts();
+    const total = facts ? facts.reduce((sum, row) => sum + row.count, 0) : 0;
+    const max = Math.max(1, ...(facts || []).map((row) => row.count));
+    let body;
+    if (facts === null) {
+      body = '<div class="empty-state">状态统计接口尚未返回数据，请重新连接网关。</div>';
+    } else if (!facts.length) {
+      body = '<div class="empty-state">当前没有工单记录。</div>';
+    } else {
+      body = `
+        <div class="defect-bars">
+          ${facts.map((row) => `
+            <div class="defect-bar">
+              <div class="defect-bar-head"><span>${escapeHtml(row.label)}</span><strong>${row.count}</strong></div>
+              <div class="defect-bar-track" style="--value:${Math.round((row.count / max) * 100)}%"><span></span></div>
+            </div>
+          `).join('')}
+        </div>`;
+    }
     return `
-      <section class="dashboard-card trend-card" aria-labelledby="trend-title">
+      <section class="dashboard-card" aria-labelledby="status-board-title">
         <div class="dashboard-card-head">
           <div class="dashboard-card-copy">
-            <p class="dashboard-kicker">${icon('trend')} OUTPUT TREND</p>
-            <h2 id="trend-title">生产趋势</h2>
-            <p>按已投产工单的计划窗口推算累计产出，当前完成量变化会同步反映到曲线。</p>
+            <p class="dashboard-kicker">${icon('trend')} ORDER STATUS</p>
+            <h2 id="status-board-title">工单状态分布</h2>
+            <p>${live
+              ? '来自网关 /order/stats/status 的全库计数，不受列表分页影响。'
+              : `演示数据集共 ${total} 张工单，按状态计数（演示模式不调用网关）。`}</p>
           </div>
-          <div class="trend-summary" aria-label="班次完成摘要">
-            <span>完成率 <strong>${completionRate}%</strong></span>
-            <span>${formatNumber(last.completed)} / ${formatNumber(last.planned)}</span>
-          </div>
+          <a class="dashboard-link" href="#/orders">全部 ${total} 张 ${icon('arrow')}</a>
         </div>
-        <div class="trend-legend" aria-hidden="true">
-          <span><i class="is-plan"></i>计划累计</span>
-          <span><i class="is-actual"></i>完成累计</span>
-          <span class="trend-window">${formatTime(series.start)}–${formatTime(series.end)}</span>
-        </div>
-        <div class="trend-chart">
-          <div class="trend-y-axis" aria-hidden="true">${yLabels.map((label) => `<span>${label}</span>`).join('')}</div>
-          <div class="trend-plot">
-            <svg viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="none" role="img" aria-labelledby="trend-svg-title trend-svg-desc">
-              <title id="trend-svg-title">生产趋势</title>
-              <desc id="trend-svg-desc">计划累计从 ${formatNumber(series.points[0]?.planned || 0)} 增至 ${formatNumber(last.planned)}，完成累计从 ${formatNumber(series.points[0]?.completed || 0)} 增至 ${formatNumber(last.completed)}。</desc>
-              <defs>
-                <linearGradient id="trend-area-fill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22"/>
-                  <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.01"/>
-                </linearGradient>
-              </defs>
-              <g class="trend-grid-lines">${gridLines}</g>
-              <path class="trend-plan-line" d="${planPath}"/>
-              <path class="trend-area" d="${areaPath}"/>
-              <path class="trend-actual-line" d="${actualPath}"/>
-              ${series.points.map((point, index) => `<circle class="trend-point" cx="${xAt(index)}" cy="${yAt(point.completed)}" r="4"><title>${escapeHtml(series.labels[index])} 完成 ${formatNumber(point.completed)}，计划 ${formatNumber(point.planned)}</title></circle>`).join('')}
-            </svg>
-          </div>
-        </div>
-        <div class="trend-x-axis" aria-hidden="true">${series.labels.map((label) => `<span>${label}</span>`).join('')}</div>
-        <details class="chart-data">
-          <summary>查看趋势数据表</summary>
-          <div class="chart-data-scroll">
-            <table>
-              <thead><tr><th>时段</th><th>计划累计</th><th>完成累计</th></tr></thead>
-              <tbody>${series.points.map((point, index) => `<tr><td>${series.labels[index]}</td><td>${formatNumber(point.planned)}</td><td>${formatNumber(point.completed)}</td></tr>`).join('')}</tbody>
-            </table>
-          </div>
-        </details>
+        ${body}
       </section>
     `;
   }
 
-  function buildOrderStatusMix() {
-    const definitions = [
-      { code: 4, label: '生产中', color: '#2563eb' },
-      { code: 5, label: '暂停', color: '#d97706' },
-      { code: 6, label: '已完工', color: '#16a34a' },
-      { code: 3, label: '已下达', color: '#0891b2' },
-      { code: 2, label: '已审核', color: '#64748b' },
-      { code: 1, label: '草稿', color: '#94a3b8' }
-    ];
-    const visibleOrders = state.orders.filter((order) => order.status >= 1 && order.status <= 6);
-    const total = visibleOrders.length;
-    return definitions
-      .map((item) => {
-        const count = visibleOrders.filter((order) => order.status === item.code).length;
-        return { ...item, count, share: total ? (count / total) * 100 : 0 };
-      })
-      .filter((item) => item.count > 0)
-      .sort((a, b) => b.count - a.count || a.code - b.code);
+  // 不良代码构成：live 用 GET /inspection/defect-stats 的真实汇总；
+  // 演示数据集没有该口径，明确说明不展示虚构构成。
+  const DEFECT_PALETTE = ['#d92d20', '#dc6803', '#7a5af8', '#0891b2', '#16a34a', '#64748b'];
+
+  function buildDefectMix() {
+    const stats = state.defectStats;
+    if (!Array.isArray(stats) || !stats.length) return [];
+    const top = stats.slice(0, 6);
+    const values = top.map((row) => Number(row.totalQty || row.times || 0));
+    const total = values.reduce((sum, value) => sum + value, 0) || 1;
+    return top.map((row, index) => ({
+      label: row.defectName || row.defectCode || '未命名缺陷',
+      count: values[index],
+      share: (values[index] / total) * 100,
+      color: DEFECT_PALETTE[index % DEFECT_PALETTE.length]
+    }));
   }
 
-  function renderOrderStatusCard() {
-    const mix = buildOrderStatusMix();
+  function renderDefectComposition() {
+    if (state.mode !== 'live') {
+      return `
+        <section class="dashboard-card status-card" aria-labelledby="defect-mix-title">
+          <div class="dashboard-card-head">
+            <div class="dashboard-card-copy">
+              <p class="dashboard-kicker">${icon('pie')} DEFECT MIX</p>
+              <h2 id="defect-mix-title">不良代码构成</h2>
+              <p>网关 /inspection/defect-stats 提供真实不良汇总，演示数据集没有该口径，此处不展示虚构构成。</p>
+            </div>
+          </div>
+          <div class="empty-state">连接 MES 网关后可查看实际不良构成。</div>
+        </section>
+      `;
+    }
+    const mix = buildDefectMix();
+    if (!mix.length) {
+      return `
+        <section class="dashboard-card status-card" aria-labelledby="defect-mix-title">
+          <div class="dashboard-card-head">
+            <div class="dashboard-card-copy">
+              <p class="dashboard-kicker">${icon('pie')} DEFECT MIX</p>
+              <h2 id="defect-mix-title">不良代码构成</h2>
+              <p>按不合格记录的不良数量汇总，来自 /inspection/defect-stats。</p>
+            </div>
+          </div>
+          <div class="empty-state">暂无不合格记录。</div>
+        </section>
+      `;
+    }
     const total = mix.reduce((sum, item) => sum + item.count, 0);
-    const dominant = mix[0] || { label: '暂无工单', share: 0, count: 0 };
+    const dominant = mix[0];
     let cursor = 0;
-    const gradient = mix.length
-      ? mix.map((item, index) => {
-        const start = cursor;
-        cursor += item.share;
-        const end = index === mix.length - 1 ? 100 : cursor;
-        return `${item.color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
-      }).join(', ')
-      : '#dbe5f1 0% 100%';
-
+    const gradient = mix.map((item, index) => {
+      const start = cursor;
+      cursor += item.share;
+      const end = index === mix.length - 1 ? 100 : cursor;
+      return `${item.color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+    }).join(', ');
     return `
-      <section class="dashboard-card status-card" aria-labelledby="status-mix-title">
+      <section class="dashboard-card status-card" aria-labelledby="defect-mix-title">
         <div class="dashboard-card-head">
           <div class="dashboard-card-copy">
-            <p class="dashboard-kicker">${icon('pie')} ORDER MIX</p>
-            <h2 id="status-mix-title">工单状态分布</h2>
-            <p>按当前工单状态汇总，不包含已关闭与已取消记录。</p>
+            <p class="dashboard-kicker">${icon('pie')} DEFECT MIX</p>
+            <h2 id="defect-mix-title">不良代码构成</h2>
+            <p>按不良数量汇总 Top ${mix.length}，来自 /inspection/defect-stats。</p>
           </div>
-          <a class="dashboard-link" href="#/orders">全部 ${total} 张 ${icon('arrow')}</a>
+          <span class="dashboard-link">共 ${formatNumber(total)} 件不良</span>
         </div>
         <div class="status-body">
-          <figure class="status-figure" aria-labelledby="status-mix-caption">
+          <figure class="status-figure" aria-labelledby="defect-mix-caption">
             <div class="status-donut" style="background:conic-gradient(from 0deg, ${gradient})">
               <span class="status-donut-center"><strong>${Math.round(dominant.share)}%</strong><small>${escapeHtml(dominant.label)}</small></span>
             </div>
-            <figcaption id="status-mix-caption" class="sr-only">${mix.map((item) => `${item.label} ${item.count} 张，占 ${Math.round(item.share)}%`).join('；')}</figcaption>
+            <figcaption id="defect-mix-caption" class="sr-only">${mix.map((item) => `${item.label} ${formatNumber(item.count)} 件，占 ${Math.round(item.share)}%`).join('；')}</figcaption>
           </figure>
           <ul class="status-legend">
             ${mix.map((item) => `
               <li>
                 <i style="--swatch:${item.color}" aria-hidden="true"></i>
                 <span>${escapeHtml(item.label)}</span>
-                <strong>${item.count}</strong>
+                <strong>${formatNumber(item.count)}</strong>
                 <small>${Math.round(item.share)}%</small>
               </li>
             `).join('')}
@@ -1272,8 +1237,8 @@
       ${renderTraveler(order)}
       ${renderMetrics()}
       <div class="insight-grid">
-        ${renderProductionTrend()}
-        ${renderOrderStatusCard()}
+        ${renderOrderStatusBoard()}
+        ${renderDefectComposition()}
       </div>
       <div class="today-grid">
         <section class="orders-board" aria-labelledby="order-queue-title">
@@ -1809,6 +1774,468 @@
     if (state.taskFilter === 'done') return tasks.filter((task) => task.status === 4);
     return tasks;
   }
+
+  /* ==========================================================
+     库存作业：安全库存清单 / 预留 / 领料退料 / 库存对账
+     全部走库存服务真实接口；演示模式明确不提供这些写操作。
+     ========================================================== */
+
+  function opsOrderId() {
+    const raw = String(state.inventoryOps.orderIdInput || '').trim();
+    const orderId = Number(raw);
+    return Number.isFinite(orderId) && orderId > 0 ? orderId : null;
+  }
+
+  function renderInventoryOps() {
+    const live = state.mode === 'live';
+    const head = `
+      <div class="toolbar" style="margin-top:26px">
+        <h2 style="margin:0;font-size:15px">库存作业</h2>
+        <span class="section-note" style="margin:0">${live ? '预留 / 领料 / 退料 / 对账都会真实写入库存服务' : '演示模式不调用网关，以下操作不可用'}</span>
+      </div>`;
+    if (!live) {
+      return `${head}${emptyState('演示模式不提供库存作业',
+        '预留、领料、退料与对账都会真实改动库存数据，演示模式无法调用。连接网关闭后可用。',
+        '<button class="button" type="button" data-action="open-connection">连接网关</button>')}`;
+    }
+    return `${head}${renderBelowSafetyCard()}${renderReservationCard()}${renderIssueCard()}${renderReconcileCard()}`;
+  }
+
+  /* ---------- 安全库存清单 ---------- */
+
+  function renderBelowSafetyCard() {
+    const ops = state.inventoryOps;
+    const rows = ops.belowSafety;
+    let body;
+    if (rows === null) {
+      body = `<div class="list-foot" style="border-top:0"><span>${ops.belowSafetyError ? `读取失败：${escapeHtml(ops.belowSafetyError)}` : '尚未读取安全线清单'}</span>
+        <button class="button small" type="button" data-action="inv-below-safety">读取</button></div>`;
+    } else if (!rows.length) {
+      body = '<div class="list-foot" style="border-top:0"><span>当前没有物料低于安全库存线。</span></div>';
+    } else {
+      body = `
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>物料</th><th>现有量</th><th>预留量</th><th>可用量</th><th>安全线</th><th>缺口</th></tr></thead>
+            <tbody>
+              ${rows.map((item) => {
+                const shortage = Math.max(0, Number(item.safetyStock || 0) - Number(item.availableQuantity || 0));
+                return `<tr>
+                  <td><strong>${escapeHtml(item.materialCode || '')}</strong><br><small>${escapeHtml(item.materialName || '')}</small></td>
+                  <td class="num">${formatNumber(item.quantity)}</td>
+                  <td class="num">${formatNumber(item.reservedQuantity)}</td>
+                  <td class="num">${formatNumber(item.availableQuantity)}</td>
+                  <td class="num">${formatNumber(item.safetyStock)}</td>
+                  <td class="num"><span class="status-pill tone-warning">缺 ${formatNumber(shortage)}</span></td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+    return `
+      <section class="data-surface" aria-label="安全库存清单" style="margin-top:14px">
+        <div class="list-foot" style="border-top:0">
+          <strong>安全库存清单（GET /inventory/below-safety）</strong>
+          <button class="button small" type="button" data-action="inv-below-safety">刷新</button>
+        </div>
+        ${body}
+      </section>`;
+  }
+
+  /* ---------- 预留 ---------- */
+
+  function renderReservationCard() {
+    const ops = state.inventoryOps;
+    const orderId = opsOrderId();
+    const busy = ops.busy === 'reserve' || ops.busy === 'release';
+    let body = '';
+    if (ops.reservationsError) {
+      body = `<div class="error-note is-visible">预留记录读取失败：${escapeHtml(ops.reservationsError)}</div>`;
+    } else if (ops.reservations !== null) {
+      if (!ops.reservations.length) {
+        body = '<div class="list-foot" style="border-top:0"><span>该工单当前没有预留记录。</span></div>';
+      } else {
+        const totalReserved = ops.reservations.reduce((sum, row) => sum + Number(row.reservedQuantity || 0), 0);
+        const totalIssued = ops.reservations.reduce((sum, row) => sum + Number(row.issuedQuantity || 0), 0);
+        body = `
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>预留单号</th><th>物料</th><th>预留量</th><th>已领</th><th>剩余</th><th>状态</th><th>到期时间</th></tr></thead>
+              <tbody>
+                ${ops.reservations.map((row) => `
+                  <tr>
+                    <td><small>${escapeHtml(row.reservationNo || '')}</small></td>
+                    <td><strong>${escapeHtml(row.materialCode || '')}</strong><br><small>${escapeHtml(row.materialName || '')}</small></td>
+                    <td class="num">${formatNumber(row.reservedQuantity)}</td>
+                    <td class="num">${formatNumber(row.issuedQuantity)}</td>
+                    <td class="num">${formatNumber(row.remainingQuantity)}</td>
+                    <td>${escapeHtml(row.statusDesc || row.status || '—')}</td>
+                    <td><small>${escapeHtml(formatDateTime(row.expireTime))}</small></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+          <div class="list-foot"><span>合计预留 ${formatNumber(totalReserved)} · 已领 ${formatNumber(totalIssued)}</span></div>`;
+      }
+    }
+    return `
+      <section class="data-surface" aria-label="物料预留" style="margin-top:14px">
+        <div class="list-foot" style="border-top:0">
+          <strong>物料预留</strong>
+          <span class="muted">按工单 BOM 需求预留，预留在同一事务内完成</span>
+        </div>
+        <div class="toolbar" style="padding:0 12px 12px">
+          <label class="field" style="min-width:150px">
+            <span class="sr-only">工单 ID</span>
+            <input type="number" min="1" placeholder="工单 ID" value="${escapeHtml(ops.orderIdInput)}" data-input="inv-order-id" aria-label="工单 ID">
+          </label>
+          <button class="button small" type="button" data-action="inv-query-order" ${busy ? 'disabled' : ''}>查询该工单</button>
+          <button class="button small" type="button" data-action="inv-reserve" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '按该工单 BOM 需求创建预留' : '请先填写工单 ID'}">按 BOM 需求预留</button>
+          <button class="button small danger" type="button" data-action="inv-release" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '释放该工单的全部预留' : '请先填写工单 ID'}">释放全部预留</button>
+          ${busy ? '<span class="sync-spinner" aria-hidden="true"></span>' : ''}
+        </div>
+        ${body}
+      </section>`;
+  }
+
+  /* ---------- 领料 / 退料 ---------- */
+
+  function renderIssueCard() {
+    const ops = state.inventoryOps;
+    const orderId = opsOrderId();
+    const busy = ops.busy === 'issue' || ops.busy === 'return';
+    let body = '';
+    if (ops.issuesError) {
+      body = `<div class="error-note is-visible">领料记录读取失败：${escapeHtml(ops.issuesError)}</div>`;
+    } else if (ops.issues !== null) {
+      if (!ops.issues.length) {
+        body = '<div class="list-foot" style="border-top:0"><span>该工单当前没有领退料记录。</span></div>';
+      } else {
+        body = ops.issues.map((issue) => {
+          const items = ops.issueItems[issue.id];
+          return `
+            <div class="list-foot"><span>
+              <strong>${escapeHtml(issue.issueNo || '')}</strong>
+              · ${Number(issue.issueType) === 1 ? '领料' : '退料'}
+              · 合计 ${formatNumber(issue.totalQuantity)}
+              · ${escapeHtml(formatDateTime(issue.issueTime))}
+            </span>
+            <button class="button small" type="button" data-action="inv-issue-items" data-issue="${issue.id}">
+              ${items ? '收起明细' : '展开明细'}
+            </button></div>
+            ${items ? `
+              <div class="table-scroll">
+                <table class="data-table">
+                  <thead><tr><th>物料</th><th>数量</th><th>批次号</th></tr></thead>
+                  <tbody>
+                    ${items.map((item) => `
+                      <tr>
+                        <td><strong>${escapeHtml(item.materialCode || '')}</strong><br><small>${escapeHtml(item.materialName || '')}</small></td>
+                        <td class="num">${formatNumber(item.quantity)}</td>
+                        <td>${escapeHtml(item.batchNo || '—')}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>` : ''}
+          `;
+        }).join('');
+      }
+    }
+    return `
+      <section class="data-surface" aria-label="领料与退料" style="margin-top:14px">
+        <div class="list-foot" style="border-top:0">
+          <strong>领料 / 退料</strong>
+          <span class="muted">领料单号由服务端生成；批次管理物料必须填批次号</span>
+        </div>
+        <div class="toolbar" style="padding:0 12px 12px">
+          <button class="button small primary" type="button" data-action="inv-issue-open" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '为该工单领料' : '请先填写工单 ID'}">新建领料</button>
+          <button class="button small" type="button" data-action="inv-return-open" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '为该工单退料' : '请先填写工单 ID'}">新建退料</button>
+        </div>
+        ${body}
+      </section>`;
+  }
+
+  /* ---------- 库存对账 ---------- */
+
+  function renderReconcileCard() {
+    const ops = state.inventoryOps;
+    const result = ops.reconcile;
+    let resultHtml = '<span class="muted">对账会比对库存主表与流水账的累计值，检查是否存在漂移。</span>';
+    if (result) {
+      resultHtml = result.count === 0
+        ? '<span class="status-pill tone-success">一致</span> 库存主表与流水账累计值完全一致，没有发现异常。'
+        : `<span class="status-pill tone-warning">${result.count} 处差异</span> ${result.autoFix ? '已按流水账重算并修复。' : '仅检查未修复，可点击「对账并修复」处理。'}`;
+    }
+    return `
+      <section class="data-surface" aria-label="库存对账" style="margin-top:14px">
+        <div class="list-foot" style="border-top:0">
+          <strong>库存对账</strong>
+          <span class="muted">POST /inventory/reconcile</span>
+        </div>
+        <div class="toolbar" style="padding:0 12px 12px">
+          <button class="button small" type="button" data-action="inv-reconcile" data-fix="0" ${ops.busy === 'reconcile' ? 'disabled' : ''}>对账检查</button>
+          <button class="button small primary" type="button" data-action="inv-reconcile" data-fix="1" ${ops.busy === 'reconcile' ? 'disabled' : ''}>对账并修复</button>
+          ${ops.busy === 'reconcile' ? '<span class="sync-spinner" aria-hidden="true"></span>' : ''}
+        </div>
+        <div class="list-foot" style="border-top:0"><span>${resultHtml}</span></div>
+      </section>`;
+  }
+
+  /* ---------- 库存作业数据加载与动作 ---------- */
+
+  async function loadBelowSafety() {
+    const ops = state.inventoryOps;
+    ops.belowSafetyError = '';
+    try {
+      const list = await api.belowSafetyStock();
+      ops.belowSafety = Array.isArray(list) ? list : [];
+    } catch (error) {
+      ops.belowSafety = [];
+      ops.belowSafetyError = error.message;
+    }
+    render();
+  }
+
+  async function loadInventoryOps() {
+    if (state.mode !== 'live') return;
+    if (state.inventoryOps.belowSafety === null && state.inventoryOps.busy !== 'below') {
+      state.inventoryOps.busy = 'below';
+      await loadBelowSafety();
+      state.inventoryOps.busy = '';
+    }
+  }
+
+  async function queryOrderStockOps() {
+    const orderId = opsOrderId();
+    if (!orderId) {
+      showToast('请先填写有效的工单 ID。', 'warning');
+      return;
+    }
+    const ops = state.inventoryOps;
+    ops.busy = 'query';
+    ops.reservationsError = '';
+    ops.issuesError = '';
+    ops.issueItems = {};
+    render();
+    const [reservations, issues] = await Promise.allSettled([
+      api.listReservations(orderId),
+      api.listIssuesByOrder(orderId)
+    ]);
+    ops.reservations = reservations.status === 'fulfilled' && Array.isArray(reservations.value) ? reservations.value : [];
+    if (reservations.status === 'rejected') ops.reservationsError = reservations.reason?.message || '读取失败';
+    ops.issues = issues.status === 'fulfilled' && Array.isArray(issues.value) ? issues.value : [];
+    if (issues.status === 'rejected') ops.issuesError = issues.reason?.message || '读取失败';
+    ops.busy = '';
+    render();
+  }
+
+  async function refreshInventoryList() {
+    try {
+      const inventory = await api.listInventory();
+      state.inventory = Array.isArray(inventory) ? inventory.map((item) => ({ ...item })) : [];
+    } catch (error) {
+      /* 保留旧数据，具体错误由调用方提示 */
+    }
+  }
+
+  // 按工单 BOM 需求创建预留：先取需求，再交给库存服务在同一事务内预留
+  async function reserveForOrder() {
+    const orderId = opsOrderId();
+    if (!orderId) {
+      showToast('请先填写有效的工单 ID。', 'warning');
+      return;
+    }
+    const ops = state.inventoryOps;
+    ops.busy = 'reserve';
+    render();
+    try {
+      const requirements = await api.orderRequirements(orderId);
+      const items = (Array.isArray(requirements) ? requirements : []).map((item) => {
+        const row = {
+          materialId: item.materialId,
+          materialCode: item.materialCode,
+          materialName: item.materialName,
+          unit: item.unit,
+          requiredQuantity: item.requiredQuantity
+        };
+        // isBatchManaged 上游没有就不要编，避免与库存服务判断不一致
+        if (item.isBatchManaged != null) row.isBatchManaged = item.isBatchManaged;
+        return row;
+      });
+      if (!items.length) {
+        showToast('该工单没有可预留的物料需求（需先有生效 BOM）。', 'warning');
+        ops.busy = '';
+        render();
+        return;
+      }
+      const result = await api.reserveMaterials({ orderId, items });
+      await refreshInventoryList();
+      ops.busy = '';
+      showToast(result?.message || `已为该工单预留 ${result?.reservedCount ?? items.length} 条物料。`);
+      await queryOrderStockOps();
+    } catch (error) {
+      ops.busy = '';
+      render();
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function releaseForOrder() {
+    const orderId = opsOrderId();
+    if (!orderId) {
+      showToast('请先填写有效的工单 ID。', 'warning');
+      return;
+    }
+    const ops = state.inventoryOps;
+    ops.busy = 'release';
+    render();
+    try {
+      const released = await api.releaseReservations(orderId);
+      await refreshInventoryList();
+      ops.busy = '';
+      showToast(`已释放 ${released ?? 0} 条预留。`);
+      await queryOrderStockOps();
+    } catch (error) {
+      ops.busy = '';
+      render();
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function toggleIssueItems(issueId) {
+    const ops = state.inventoryOps;
+    if (ops.issueItems[issueId]) {
+      delete ops.issueItems[issueId];
+      render();
+      return;
+    }
+    try {
+      const items = await api.listIssueItems(issueId);
+      ops.issueItems[issueId] = Array.isArray(items) ? items : [];
+      render();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function runReconcile(autoFix) {
+    const ops = state.inventoryOps;
+    ops.busy = 'reconcile';
+    render();
+    try {
+      const count = await api.reconcileInventory(autoFix);
+      await refreshInventoryList();
+      ops.reconcile = { count: Number(count) || 0, autoFix };
+      ops.busy = '';
+      render();
+      showToast(autoFix ? `对账完成，修复 ${Number(count) || 0} 处差异。` : `对账完成，发现 ${Number(count) || 0} 处差异。`);
+    } catch (error) {
+      ops.busy = '';
+      render();
+      showToast(error.message, 'error');
+    }
+  }
+
+  // 领料 / 退料弹窗
+  function openIssueModal(kind) {
+    const orderId = opsOrderId();
+    if (!orderId) {
+      showToast('请先填写有效的工单 ID。', 'warning');
+      return;
+    }
+    const isIssue = kind === 'issue';
+    const options = state.inventory.map((item) => `
+      <option value="${item.materialId}">${escapeHtml(item.materialCode)} · ${escapeHtml(item.materialName)}（可用 ${formatNumber(item.availableQuantity)} ${escapeHtml(item.unit || '')}）</option>
+    `).join('');
+    const body = `
+      <p class="modal-intro">${isIssue ? '领料会扣减现有量并核销该工单的预留；' : '退料会把物料退回库存；'}单号由服务端生成，同号重复提交只生效一次。</p>
+      <form data-form="${isIssue ? 'issue' : 'return'}" data-order="${orderId}">
+        <div class="form-grid">
+          <div class="field full">
+            <label for="issue-order">工单 ID</label>
+            <input id="issue-order" value="${orderId}" readonly>
+          </div>
+          <div class="field full">
+            <label for="issue-material">物料</label>
+            <select id="issue-material" name="materialId" required>
+              <option value="">请选择物料</option>
+              ${options}
+            </select>
+          </div>
+          <div class="field">
+            <label for="issue-qty">数量</label>
+            <input id="issue-qty" name="quantity" type="number" min="0.0001" step="any" required>
+          </div>
+          <div class="field">
+            <label for="issue-batch">批次号</label>
+            <input id="issue-batch" name="batchNo" placeholder="批次管理物料必填">
+          </div>
+          <div class="field full">
+            <label for="issue-remark">备注</label>
+            <input id="issue-remark" name="remark" placeholder="可选">
+          </div>
+        </div>
+        <div class="form-note">批次管理物料不填批次号时，库存服务会直接拒绝该次${isIssue ? '领料' : '退料'}——这是批次追溯的强制要求。</div>
+        <div class="error-note" id="issue-error" role="alert"></div>
+        <div class="form-actions">
+          <button class="button" type="button" data-action="close-modal">取消</button>
+          <button class="button primary" type="submit">提交${isIssue ? '领料' : '退料'}</button>
+        </div>
+      </form>
+    `;
+    showModal(`工单 ${orderId}`, isIssue ? '新建领料' : '新建退料', body);
+  }
+
+  async function handleIssueSubmit(form) {
+    const isIssue = form.dataset.form === 'issue';
+    const orderId = Number(form.dataset.order);
+    const data = Object.fromEntries(new FormData(form).entries());
+    const errorBox = document.getElementById('issue-error');
+    const button = form.querySelector('button[type="submit"]');
+    const materialId = Number(data.materialId);
+    const quantity = Number(data.quantity);
+    if (!Number.isFinite(materialId) || materialId <= 0) {
+      errorBox.textContent = '请选择物料。';
+      errorBox.classList.add('is-visible');
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      errorBox.textContent = '数量必须大于 0。';
+      errorBox.classList.add('is-visible');
+      return;
+    }
+    errorBox.classList.remove('is-visible');
+    button.disabled = true;
+    button.textContent = '正在提交';
+    const payload = {
+      orderId,
+      operatorId: state.user?.id,
+      operatorName: state.user?.realName || undefined,
+      remark: String(data.remark || '').trim() || undefined,
+      items: [{
+        materialId,
+        quantity,
+        batchNo: String(data.batchNo || '').trim() || undefined
+      }]
+    };
+    try {
+      const result = isIssue ? await api.issueMaterials(payload) : await api.returnMaterials(payload);
+      closeModal();
+      await refreshInventoryList();
+      showToast(result?.issueNo ? `${isIssue ? '领料' : '退料'}单 ${result.issueNo} 已提交。` : `${isIssue ? '领料' : '退料'}已提交。`);
+      await queryOrderStockOps();
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('is-visible');
+      button.disabled = false;
+      button.textContent = `提交${isIssue ? '领料' : '退料'}`;
+    }
+  }
+
+
 
   /* ==========================================================
      基础资料（只读）：产品 / 物料 / BOM / 工艺路线
@@ -3963,6 +4390,18 @@
       error: '',
       loadedTabs: {}
     };
+    state.inventoryOps = {
+      orderIdInput: '',
+      belowSafety: null,
+      belowSafetyError: '',
+      reservations: null,
+      reservationsError: '',
+      issues: null,
+      issuesError: '',
+      issueItems: {},
+      busy: '',
+      reconcile: null
+    };
     state.drawerTaskId = null;
     state.sync = { running: false, error: '', syncedAt: null, sources: {} };
   }
@@ -4165,6 +4604,30 @@
       case 'report-task':
         openReportModal(taskId);
         break;
+      case 'inv-below-safety':
+        loadBelowSafety();
+        break;
+      case 'inv-query-order':
+        queryOrderStockOps();
+        break;
+      case 'inv-reserve':
+        reserveForOrder();
+        break;
+      case 'inv-release':
+        releaseForOrder();
+        break;
+      case 'inv-issue-open':
+        openIssueModal('issue');
+        break;
+      case 'inv-return-open':
+        openIssueModal('return');
+        break;
+      case 'inv-issue-items':
+        toggleIssueItems(actionElement.dataset.issue);
+        break;
+      case 'inv-reconcile':
+        runReconcile(actionElement.dataset.fix === '1');
+        break;
       case 'release-order':
         openTransitionConfirm(orderId, 'RELEASED');
         break;
@@ -4277,6 +4740,7 @@
     else if (formName === 'create-order') handleCreateOrder(form);
     else if (formName === 'report') handleReport(form);
     else if (formName === 'dispatch') handleDispatch(form);
+    else if (formName === 'issue' || formName === 'return') handleIssueSubmit(form);
     else if (formName === 'transition') handleTransition(form.dataset.order, form.dataset.target);
     else if (formName === 'login') handleLogin(form);
   }
@@ -4324,6 +4788,7 @@
       else render();
       return;
     }
+    if (input.dataset.input === 'inv-order-id') state.inventoryOps.orderIdInput = input.value;
     render();
     const replacement = document.querySelector(`[data-input="${input.dataset.input}"]`);
     if (replacement) {
@@ -4430,6 +4895,9 @@
     if (state.mode === 'live' && route.view === 'basic') {
       loadBasicTab();
     }
+    if (state.mode === 'live' && route.view === 'materials') {
+      loadInventoryOps();
+    }
   });
 
   updateClock();
@@ -4441,6 +4909,10 @@
   }
   render();
   if (state.mode === 'live') syncStoredSession();
-  // 直接以 #/basic 打开时，hashchange 不会触发，这里补一次首屏加载
-  if (state.mode === 'live' && parseRoute().view === 'basic') loadBasicTab();
+  // 直接以 #/basic 或 #/materials 打开时，hashchange 不会触发，这里补一次首屏加载
+  if (state.mode === 'live') {
+    const initialView = parseRoute().view;
+    if (initialView === 'basic') loadBasicTab();
+    if (initialView === 'materials') loadInventoryOps();
+  }
 })();

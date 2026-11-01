@@ -96,15 +96,18 @@ MES 的价值不在于“多一个后台”，而在于及时回答四个问题�
 
 | 页面路由 | 内容 | 主要接口 |
 |---|---|---|
-| `#/today` | 今日生产、随工单、阻断决策、批次脉络 | 工单分页、工单详情、库存列表 |
-| `#/orders` | 工单列表、筛选、新建工单 | `GET /production-service/order/page`、`POST /production-service/order` |
-| `#/orders/:id` | 工艺路线、数量、状态历史、工单流转 | `GET /production-service/order/{id}`、`POST /production-service/order/{id}/transit` |
-| `#/tasks` | 工序任务队列与状态操作 | `POST /production-service/work-task/{id}/start`、`/pause`、`/resume`、`/complete` |
-| `#/materials` | 现有量 / 预留量 / 可用量 | `GET /inventory-service/inventory/list` |
+| `#/today` | 今日生产、随工单、阻断决策、批次脉络、工单状态分布、不良代码构成 | 工单分页、工单详情、`/order/stats/status`、`/inspection/defect-stats`、库存列表 |
+| `#/orders` | 工单列表、真分页与状态筛选、新建工单 | `GET /production-service/order/page`、`POST /production-service/order` |
+| `#/orders/:id` | 工艺路线、数量、状态历史、工单流转、齐套 / 报工 / 质检分区 | `GET /production-service/order/{id}`、`POST /production-service/order/{id}/transit`、`/{id}/requirements`、`GET /report/order/{id}`、`GET /inspection/order/{id}` |
+| `#/tasks` | 工序任务队列、状态操作、派工、报工 | `POST /production-service/work-task/{id}/start`、`/pause`、`/resume`、`/complete`、`/pass-inspection`、`/reject-inspection`、`/dispatch`、`GET /report/new-no`、`POST /report` |
+| `#/materials` | 现有量 / 预留量 / 可用量，以及库存作业（安全线清单、预留与释放、领料退料、对账） | `GET /inventory-service/inventory/list`、`/inventory/below-safety`、`/reservation/**`、`/issue/**`、`POST /inventory/reconcile` |
+| `#/basic` | 基础资料**只读**视图：产品 / 物料 / BOM / 工艺路线 | `GET /product-service/product/page`、`/material/page`、`/bom/**`、`/route/**` |
 | `#/trace` | 反向与正向批次路径 | `GET /quality-service/trace/backward`、`/trace/forward` |
 | `#/quality` | 待质检任务、放行与退回 | 工序任务质检门禁接口 |
 
 默认进入**演示数据**模式，所有页面无需数据库即可浏览；右上角登录后会连接真实 REST 接口。登录失败不会伪装成功，401 时会清除本地 JWT 并回退演示模式。
+
+工作台上的可视化区块都来自真实聚合接口，没有用插值伪造的趋势曲线：工单状态分布取 `/order/stats/status` 的全库计数（不受分页影响），不良代码构成取 `/inspection/defect-stats`；演示模式下这两处分别标注“演示数据集”与“不展示虚构构成”。逐区块口径见 [`docs/11-前端工作台.md`](docs/11-前端工作台.md) 第 6.1 节。
 
 ### 界面预览
 
@@ -550,7 +553,7 @@ java perf-test/PerfInventoryConcurrency.java 100 1 1 100
 5. **没有接口级 RBAC：**角色已建模并写入 JWT，但接口尚未使用 `@PreAuthorize` 做细粒度授权。
 6. **定时任务缺少分布式锁：**多实例部署时，outbox 投递和对账任务可能重复执行；当前单机演示无影响，生产环境需要选主或分布式锁。
 7. **部署实测环境为 Windows + Docker Desktop**：Docker Compose 全套已端到端验证通过（2026-10-31）；Linux 服务器直装环境尚未实测，迁移时注意路径与资源限制差异。
-8. **前端为原生实现：**当前工作是零构建依赖的 HTML / CSS / JS，不是 Vue / Vite SPA，也没有完整的产品、BOM、工艺维护表单。
+8. **前端为原生实现：**当前工作是零构建依赖的 HTML / CSS / JS，不是 Vue / Vite SPA；基础资料页（产品 / 物料 / BOM / 工艺路线）为**只读**视图，维护表单与写入接口本期未接入。
 9. **不是可直接商用的生产系统：**缺少审计、数据权限、灰度发布、监控告警、备份恢复、压测和完整的安全加固。
 
 ---
