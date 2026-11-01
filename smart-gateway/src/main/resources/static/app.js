@@ -1303,7 +1303,7 @@
   }
 
   function renderRecentActivity() {
-    const items = recentActivityItems(5);
+    const items = recentActivityItems(4);
     return `
       <section class="dashboard-card activity-card" aria-labelledby="activity-title">
         <div class="dashboard-card-head">
@@ -1547,17 +1547,19 @@
           <h2 id="sec-coop">协同与追溯</h2>
           <p>生产动态、工单队列与批次链路</p>
         </div>
-        ${renderRecentActivity()}
         <div class="exec-grid">
-          ${renderOrderQueue()}
+          ${renderRecentActivity()}
           ${renderTraceCompact()}
+        </div>
+        <div class="dash-stack">
+          ${renderOrderQueue()}
         </div>
       </section>
     `;
   }
 
   function renderOrderQueue() {
-    const visibleOrders = state.orders.filter((item) => item.status !== 7 && item.status !== 8).slice(0, 6);
+    const visibleOrders = state.orders.filter((item) => item.status !== 7 && item.status !== 8).slice(0, 5);
     return `
       <section class="dashboard-card order-queue-card" aria-labelledby="order-queue-title">
         <div class="dashboard-card-head">

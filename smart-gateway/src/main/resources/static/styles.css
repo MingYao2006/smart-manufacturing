@@ -8119,3 +8119,93 @@ body {
   opacity: 0.6;
   cursor: default;
 }
+/* ==========================================================================
+   进一步压缩：生产趋势 / 最近生产动态 / 工单队列 三块过高
+   · 趋势图高度 168 → 116px，图例与窗口合计合并为一行
+   · 动态改为 4 条、行距收紧
+   · 工单队列改为 5 条、行高收紧
+   ========================================================================== */
+
+.trend-chart {
+  padding: 2px 16px 0;
+}
+
+.trend-plot {
+  height: 116px;
+}
+
+.trend-y-axis {
+  padding: 0;
+  font-size: 12px;
+}
+
+.trend-x-axis {
+  padding: 4px 16px 0 50px;
+}
+
+.trend-legend {
+  padding: 6px 16px 0;
+}
+
+.trend-window-note {
+  margin: 6px 16px 0;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.chart-data {
+  margin: 6px 16px 12px;
+}
+
+/* 最近生产动态：压缩行高 */
+.activity-feed .activity-item {
+  padding: 8px 16px;
+}
+
+.activity-item strong {
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.activity-item small {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.activity-item time {
+  font-size: 12px;
+}
+
+/* 工单队列：压缩行高与列间距 */
+.order-queue-card .order-row {
+  padding: 8px 12px;
+  gap: 10px;
+}
+
+.order-row .order-number {
+  font-size: 12.5px;
+}
+
+.order-row .order-product {
+  font-size: 12.5px;
+}
+
+.order-row .order-spec,
+.order-row .order-stage-meta {
+  font-size: 12px;
+}
+
+.order-row .order-progress-head strong {
+  font-size: 13px;
+}
+
+/* 三块卡片的正文区间距收紧 */
+.order-queue-card .dashboard-card-head,
+.activity-card .dashboard-card-head,
+.trend-card .dashboard-card-head {
+  padding: 12px 16px 8px;
+}
+
+.dash-stack {
+  margin-top: 16px;
+}
