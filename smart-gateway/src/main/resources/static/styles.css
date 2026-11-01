@@ -7137,22 +7137,17 @@ html {
   background: var(--board);
 }
 
-/* ---------- 页面整体背景：车间实景图（已裁掉左侧标识与标语） ----------
-   原图左侧带 SmartMES 标识和「让制造更智能 · 生产更高效」标语，
-   直接铺满会从页面标题、卡片间隙里透出可读文字，和真实 UI 文案打架。
-   处理方式：素材层面裁剪到只剩机械臂与车间（38% 之后），
-   样式层面再做 blur(4px) + 浅色薄纱，作为纯氛围底。 */
+/* ---------- 页面整体背景：车间实景图（已裁掉标识/标语，并烘焙了模糊） ----------
+   注意两点，都是踩过的坑：
+   1. 原图左侧带 SmartMES 标识与「让制造更智能 · 生产更高效」标语，必须裁掉，
+      否则会从页面标题和卡片间隙里透出可读文字，和真实 UI 文案叠成重影。
+   2. 不要用 body::before + z-index:-1 来做背景层：按 CSS 绘制顺序，
+      body 自身的不透明 background-color 排在负 z-index 子层之后，会把整层盖掉
+      （表现为"背景没了"）。所以直接放在 body 的 background-image 上。
+   模糊已经由脚本烘焙进 app-bg.jpg（缩到 1/6 再放大），CSS 不再需要 filter。 */
 
 body {
   background-color: var(--board);
-  background-image: none;
-}
-
-body::before {
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  content: "";
   background-image:
     linear-gradient(180deg,
       rgba(245, 247, 251, 0.46) 0%,
@@ -7162,17 +7157,13 @@ body::before {
   background-position: center, center;
   background-size: cover, cover;
   background-repeat: no-repeat, no-repeat;
-  filter: blur(4px);
-  /* 模糊会让边缘变透明露白，放大一点点盖住 */
-  transform: scale(1.05);
-  pointer-events: none;
+  background-attachment: fixed, fixed;
 }
 
 @media (max-width: 820px) {
-  /* 移动端 fixed + blur 合成开销大，改为随页面滚动的绝对定位并减小模糊半径 */
-  body::before {
-    position: absolute;
-    filter: blur(3px);
+  /* 移动端 fixed 背景滚动会卡顿，退回普通滚动 */
+  body {
+    background-attachment: scroll, scroll;
   }
 }
 
