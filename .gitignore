@@ -30,3 +30,6 @@ Thumbs.db
 # ---- 前端 ----
 node_modules/
 dist/
+
+# CSS 清理前的本地备份（确认外观无误后可删除）
+smart-gateway/src/main/resources/static/.styles.backup-*.css

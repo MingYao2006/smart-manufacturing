@@ -7142,9 +7142,9 @@ html {
    1. 背景**不要**用 body::before + z-index:-1：按 CSS 绘制顺序，body 自身的不透明
       background-color 排在负 z-index 子层之后，会把整层盖掉（表现为"背景没了"）。
       所以直接放在 body 的 background-image 上。
-   2. 原图左上角带 SmartMES 标识与「让制造更智能 · 生产更高效」标语。不裁剪的话这些字
-      会从页面标题、卡片间隙里透出来 —— 这是原图直铺的固有代价，用很轻的浅色薄纱压一压，
-      只求不抢读，不追求把图糊掉。 */
+   2. 原图左上角带 SmartMES 的 S 形标识（无可读文字）。不裁剪时它会从页面标题、卡片
+      间隙里透出来 —— 这是原图直铺的固有代价，用很轻的浅色薄纱压一压，只求不抢读，
+      不追求把图糊掉。 */
 
 body {
   background-color: var(--board);
@@ -7153,7 +7153,7 @@ body {
       rgba(245, 247, 251, 0.14) 0%,
       rgba(240, 245, 252, 0.22) 60%,
       rgba(238, 243, 251, 0.30) 100%),
-    url("./assets/app-bg.jpg");
+    url("./assets/app-bg.png");
   background-position: center, center;
   background-size: cover, cover;
   background-repeat: no-repeat, no-repeat;
@@ -8243,5 +8243,67 @@ body {
 @media (max-width: 1180px) {
   .dash-2col .trend-plot {
     height: 200px;
+  }
+}
+/* ========== Hover elevation ========== */
+
+@media (hover: hover) {
+  .kpi-card,
+  .detail-metric,
+  .status-card,
+  .trend-card,
+  .order-queue-card,
+  .decision-card,
+  .task-card,
+  .inspection-item,
+  .activity-item,
+  .filter-chip,
+  .pager-btn,
+  .button {
+    transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  }
+
+  .kpi-card:hover,
+  .status-card:hover,
+  .trend-card:hover,
+  .order-queue-card:hover,
+  .decision-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 2px 4px rgba(15, 23, 42, 0.06), 0 14px 28px rgba(15, 23, 42, 0.09);
+  }
+
+  .detail-metric:hover,
+  .task-card:hover,
+  .inspection-item:hover,
+  .activity-item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 8px 18px rgba(15, 23, 42, 0.07);
+  }
+
+  .filter-chip:hover,
+  .pager-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(15, 23, 42, 0.1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kpi-card:hover,
+  .detail-metric:hover,
+  .status-card:hover,
+  .trend-card:hover,
+  .order-queue-card:hover,
+  .decision-card:hover,
+  .task-card:hover,
+  .inspection-item:hover,
+  .activity-item:hover,
+  .filter-chip:hover,
+  .pager-btn:hover,
+  .button:hover {
+    transform: none;
   }
 }
