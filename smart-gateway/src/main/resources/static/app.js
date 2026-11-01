@@ -1536,7 +1536,10 @@
           <p>指标按计量单位分组统计，不跨单位相加；比率类指标统一标注口径范围</p>
         </div>
         ${renderMetrics()}
-        ${renderProductionTrend()}
+        <div class="dash-2col">
+          ${renderProductionTrend()}
+          ${renderOrderQueue()}
+        </div>
         <div class="dash-2col">
           ${renderOrderStatusBoard()}
           ${renderDefectComposition()}
@@ -1545,14 +1548,11 @@
       <section class="dash-section" aria-labelledby="sec-coop">
         <div class="dash-section-head">
           <h2 id="sec-coop">协同与追溯</h2>
-          <p>生产动态、工单队列与批次链路</p>
+          <p>生产动态与批次链路</p>
         </div>
         <div class="exec-grid">
           ${renderRecentActivity()}
           ${renderTraceCompact()}
-        </div>
-        <div class="dash-stack">
-          ${renderOrderQueue()}
         </div>
       </section>
     `;

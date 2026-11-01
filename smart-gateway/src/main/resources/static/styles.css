@@ -8209,3 +8209,39 @@ body {
 .dash-stack {
   margin-top: 16px;
 }
+/* ==========================================================================
+   生产趋势与工单队列并排（两等分列）
+   · 趋势图在窄栏里调高到 180px，避免整行宽 + 116px 高那种扁平感
+   · 队列在窄栏里收紧列宽与间距，四列仍保留
+   ========================================================================== */
+
+.dash-2col .trend-plot {
+  height: 180px;
+}
+
+.dash-2col .trend-x-axis {
+  padding-left: 44px;
+}
+
+.dash-2col .order-queue-card .order-row {
+  grid-template-columns:
+    minmax(0, 1.12fr) minmax(0, 1fr) minmax(62px, 0.58fr) minmax(88px, 0.78fr) 18px;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.dash-2col .order-queue-card .order-stage-meta,
+.dash-2col .order-queue-card .order-spec {
+  font-size: 12px;
+}
+
+/* 窄栏里队列行不再显示进度条刻度，只留百分比与数量，省高度 */
+.dash-2col .order-queue-card .progress-track {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  .dash-2col .trend-plot {
+    height: 200px;
+  }
+}
