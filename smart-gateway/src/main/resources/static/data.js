@@ -821,6 +821,99 @@
     ]
   };
 
+  /* 历史完工工单（archived）
+     目的：让工作台的「生产趋势」在演示模式下有近 7 天的真实分布，而不是 7 天里
+     只有 1 天有值、整张图几乎空白。
+     archived=true 的含义：不计入「今日计划」等 KPI，也不占用工单队列名额。
+     这些记录与其余演示数据一样是合成数据，只用于演示界面，不代表真实产量。 */
+  const dayKey = (offset) => {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
+  };
+  const dayAt = (offset, hours, minutes) =>
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset, hours, minutes, 0).toISOString();
+
+  const historyProducts = {
+    1: { productId: 1, productCode: 'PRD-DB-X1', productName: '智能电表 X1', spec: '220V/5(60)A', unit: '台' },
+    2: { productId: 2, productCode: 'PRD-DB-X2', productName: '智能电表 X2', spec: '220V/10(100)A', unit: '台' },
+    3: { productId: 3, productCode: 'PRD-SEMI-C1', productName: '电表控制板 C1', spec: '含 MCU + 计量芯片', unit: '块' }
+  };
+
+  const historyPlans = [
+    { offset: 1, seq: '001', productId: 1, plan: 240, defect: 3 },
+    { offset: 2, seq: '002', productId: 2, plan: 180, defect: 2 },
+    { offset: 3, seq: '003', productId: 1, plan: 300, defect: 5 },
+    { offset: 4, seq: '004', productId: 3, plan: 420, defect: 4 },
+    { offset: 5, seq: '005', productId: 2, plan: 200, defect: 1 },
+    { offset: 6, seq: '006', productId: 1, plan: 260, defect: 2 }
+  ];
+
+  historyPlans.forEach((item, index) => {
+    const meta = historyProducts[item.productId];
+    const orderId = 7 + index;
+    const orderNo = `MO-${dayKey(item.offset)}-${item.seq}`;
+    const qualified = item.plan - item.defect;
+    orders.push({
+      id: orderId,
+      orderNo,
+      planId: 10 + index,
+      productId: meta.productId,
+      productCode: meta.productCode,
+      productName: meta.productName,
+      spec: meta.spec,
+      unit: meta.unit,
+      bomVersion: 'V1',
+      routeVersion: 'V1',
+      planQuantity: item.plan,
+      completedQuantity: item.plan,
+      qualifiedQuantity: qualified,
+      defectQuantity: item.defect,
+      progress: 100,
+      status: 6,
+      statusDesc: '已完工',
+      planStartTime: dayAt(item.offset, 8, 0),
+      planEndTime: dayAt(item.offset, 16, 0),
+      actualStartTime: dayAt(item.offset, 8, 6),
+      actualEndTime: dayAt(item.offset, 15, 20),
+      archived: true,
+      remark: '历史完工订单（演示数据，用于展示近 7 天趋势）'
+    });
+
+    tasksByOrder[orderId] = [
+      {
+        id: 500 + index * 10 + 1, orderId, orderNo, stepNo: 10, stepName: '外壳组装',
+        workCenter: '装配一线', standardHours: 0.25,
+        planQuantity: item.plan, reportedQuantity: item.plan,
+        qualifiedQuantity: qualified, defectQuantity: item.defect, actualHours: 2,
+        status: 4, statusDesc: '已完成', isInspection: 0,
+        operatorId: 4, operatorName: '王工',
+        startTime: dayAt(item.offset, 8, 6), endTime: dayAt(item.offset, 11, 20)
+      },
+      {
+        id: 500 + index * 10 + 2, orderId, orderNo, stepNo: 20, stepName: '老化测试',
+        workCenter: '老化房', standardHours: 2,
+        planQuantity: item.plan, reportedQuantity: item.plan,
+        qualifiedQuantity: qualified, defectQuantity: item.defect, actualHours: 3,
+        status: 4, statusDesc: '已完成', isInspection: 1,
+        operatorId: 5, operatorName: '赵质检',
+        startTime: dayAt(item.offset, 11, 30), endTime: dayAt(item.offset, 15, 20)
+      }
+    ];
+
+    statusEvents[orderId] = [
+      {
+        fromStatus: 4, fromStatusDesc: '生产中', toStatus: 6, toStatusDesc: '已完工',
+        reason: '全部工序完成，质量放行', operatorName: '系统',
+        operateTime: dayAt(item.offset, 15, 20)
+      },
+      {
+        fromStatus: 2, fromStatusDesc: '已审核', toStatus: 3, toStatusDesc: '已下达',
+        reason: '计划确认', operatorName: '张计划',
+        operateTime: dayAt(item.offset, 8, 0)
+      }
+    ];
+  });
+
   window.MES_DEMO = {
     dateKey,
     orders,

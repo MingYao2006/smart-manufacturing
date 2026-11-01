@@ -7344,6 +7344,7 @@ html {
 .dash-span-5 { grid-column: span 5; }
 .dash-span-7 { grid-column: span 7; }
 .dash-span-8 { grid-column: span 8; }
+.dash-span-12 { grid-column: span 12; }
 
 /* ---------- 生产趋势图 ---------- */
 
@@ -7463,10 +7464,19 @@ html {
 
 /* ---------- 紧凑化：工单队列 / 动态 / 状态 / 不良 / 批次脉络 ---------- */
 
-/* 工单队列放进 7 列栅格后要更扁：原来的 104px 行高太占空间 */
+/* 工单队列整行展示，不再内部滚动（滚动条会打断阅读） */
 .order-queue-card .order-list {
-  max-height: 430px;
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+/* 空态压缩：不要用 190px 的虚线大框，改成一行说明 */
+.dashboard-note {
+  margin: 0;
+  padding: 16px;
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .order-queue-card .order-row {
@@ -7562,7 +7572,8 @@ html {
   .dash-span-4,
   .dash-span-5,
   .dash-span-7,
-  .dash-span-8 {
+  .dash-span-8,
+  .dash-span-12 {
     grid-column: span 12;
   }
 }

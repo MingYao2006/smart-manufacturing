@@ -716,21 +716,23 @@
   }
 
   function calculateMetrics() {
-    const planned = state.orders.reduce((sum, order) => sum + Number(order.planQuantity || 0), 0);
-    const completed = state.orders.reduce((sum, order) => sum + Number(order.completedQuantity || 0), 0);
-    const qualified = state.orders.reduce((sum, order) => sum + Number(order.qualifiedQuantity || 0), 0);
-    const units = [...new Set(state.orders.map((order) => order.unit).filter(Boolean))];
+    // archived 是演示数据集里的历史完工工单，只用于趋势图，不计入今日 KPI
+    const scoped = state.orders.filter((order) => !order.archived);
+    const planned = scoped.reduce((sum, order) => sum + Number(order.planQuantity || 0), 0);
+    const completed = scoped.reduce((sum, order) => sum + Number(order.completedQuantity || 0), 0);
+    const qualified = scoped.reduce((sum, order) => sum + Number(order.qualifiedQuantity || 0), 0);
+    const units = [...new Set(scoped.map((order) => order.unit).filter(Boolean))];
     const workCenters = [
       ...new Set(
-        state.orders
+        scoped
           .flatMap((order) => tasksFor(order.id))
           .map((task) => task.workCenter)
           .filter(Boolean)
       )
     ];
-    const inProgress = state.orders.filter((order) => [3, 4].includes(order.status)).length;
-    const paused = state.orders.filter((order) => order.status === 5).length;
-    const risks = state.orders.filter((order) => {
+    const inProgress = scoped.filter((order) => [3, 4].includes(order.status)).length;
+    const paused = scoped.filter((order) => order.status === 5).length;
+    const risks = scoped.filter((order) => {
       if (![4, 5].includes(order.status)) return false;
       return relativeMinutes(order.planEndTime).risk;
     }).length;
@@ -743,7 +745,7 @@
       risks,
       paused,
       inProgress,
-      orderCount: state.orders.length,
+      orderCount: scoped.length,
       unitText: units.length ? units.join(' / ') : '件',
       workCenterCount: workCenters.length
     };
@@ -1049,7 +1051,31 @@
   // 演示数据集没有该口径，明确说明不展示虚构构成。
   const DEFECT_PALETTE = ['#d92d20', '#dc6803', '#7a5af8', '#0891b2', '#16a34a', '#64748b'];
 
+  // 不良构成：
+  //  · live  → /inspection/defect-stats 的不良代码 × 不良数量（真实汇总）
+  //  · demo  → 演示工单上真实记录的不良数量，按产品聚合
+  //            （演示数据集没有不良代码口径，所以按产品而不是按缺陷类型）
+  // 两种模式都只汇总已有数据，不编造缺陷类型。
   function buildDefectMix() {
+    if (state.mode !== 'live') {
+      const byProduct = new Map();
+      state.orders
+        .filter((order) => !order.archived)
+        .forEach((order) => {
+          const defect = Number(order.defectQuantity || 0);
+          if (defect <= 0) return;
+          const key = order.productName || '未命名产品';
+          byProduct.set(key, (byProduct.get(key) || 0) + defect);
+        });
+      const entries = [...byProduct.entries()].sort((a, b) => b[1] - a[1]);
+      const total = entries.reduce((sum, [, count]) => sum + count, 0) || 1;
+      return entries.map(([label, count], index) => ({
+        label,
+        count,
+        share: (count / total) * 100,
+        color: DEFECT_PALETTE[index % DEFECT_PALETTE.length]
+      }));
+    }
     const stats = state.defectStats;
     if (!Array.isArray(stats) || !stats.length) return [];
     const top = stats.slice(0, 6);
@@ -1064,20 +1090,11 @@
   }
 
   function renderDefectComposition() {
-    if (state.mode !== 'live') {
-      return `
-        <section class="dashboard-card status-card" aria-labelledby="defect-mix-title">
-          <div class="dashboard-card-head">
-            <div class="dashboard-card-copy">
-              <p class="dashboard-kicker">${icon('pie')} DEFECT MIX</p>
-              <h2 id="defect-mix-title">不良代码构成</h2>
-              <p>网关 /inspection/defect-stats 提供真实不良汇总，演示数据集没有该口径，此处不展示虚构构成。</p>
-            </div>
-          </div>
-          <div class="empty-state">连接 MES 网关后可查看实际不良构成。</div>
-        </section>
-      `;
-    }
+    const live = state.mode === 'live';
+    const title = live ? '不良代码构成' : '不良数量构成';
+    const caption = live
+      ? '按不合格记录的不良数量汇总，来自 /inspection/defect-stats。'
+      : '演示数据集按演示工单上的不良数量汇总（按产品），不含缺陷代码口径。';
     const mix = buildDefectMix();
     if (!mix.length) {
       return `
@@ -1085,11 +1102,11 @@
           <div class="dashboard-card-head">
             <div class="dashboard-card-copy">
               <p class="dashboard-kicker">${icon('pie')} DEFECT MIX</p>
-              <h2 id="defect-mix-title">不良代码构成</h2>
-              <p>按不合格记录的不良数量汇总，来自 /inspection/defect-stats。</p>
+              <h2 id="defect-mix-title">${title}</h2>
+              <p>${caption}</p>
             </div>
           </div>
-          <div class="empty-state">暂无不合格记录。</div>
+          <p class="dashboard-note">${live ? '暂无不合格记录，当前所有检验项均判定为合格。' : '演示工单上没有不良数量记录。'}</p>
         </section>
       `;
     }
@@ -1107,8 +1124,8 @@
         <div class="dashboard-card-head">
           <div class="dashboard-card-copy">
             <p class="dashboard-kicker">${icon('pie')} DEFECT MIX</p>
-            <h2 id="defect-mix-title">不良代码构成</h2>
-            <p>按不良数量汇总 Top ${mix.length}，来自 /inspection/defect-stats。</p>
+            <h2 id="defect-mix-title">${title}</h2>
+            <p>${caption}</p>
           </div>
           <span class="dashboard-link">共 ${formatNumber(total)} 件不良</span>
         </div>
@@ -1405,8 +1422,8 @@
         <div class="dash-span dash-span-4">${renderOrderStatusBoard()}</div>
         <div class="dash-span dash-span-8">${renderRecentActivity()}</div>
         <div class="dash-span dash-span-4">${renderDefectComposition()}</div>
-        <div class="dash-span dash-span-7">${renderOrderQueue()}</div>
-        <div class="dash-span dash-span-5">${renderTraceOverview()}</div>
+        <div class="dash-span dash-span-12">${renderOrderQueue()}</div>
+        <div class="dash-span dash-span-12">${renderTraceOverview()}</div>
       </div>
     `;
   }
