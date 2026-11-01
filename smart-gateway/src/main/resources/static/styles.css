@@ -7087,3 +7087,502 @@ a,
   outline-color: var(--signal);
 }
 
+/* ==========================================================================
+   工作台视觉层（独立覆盖层，放在文件末尾，靠后定义生效）
+   目标：把整体观感从深色重工业风调成参考稿的浅色数据面板——
+   · 浅色页面底 + 白色圆角卡片 + 柔和投影
+   · 品牌色统一为标准蓝 #2563eb
+   · 顶部时钟换用平滑的人文无衬线，去掉机械感
+   · 工作台改 12 栅格，信息密度更高、更紧凑
+   只覆盖视觉属性（颜色 / 圆角 / 边框 / 投影 / 间距），不改动布局结构。
+   ========================================================================== */
+
+:root {
+  --board: #f5f7fb;
+  --paper: #ffffff;
+  --paper-deep: #f7f9fd;
+  --line: #e9eef7;
+  --line-strong: #d9e2f0;
+  --ink: #16233a;
+  --muted: #64748b;
+  --muted-2: #94a3b8;
+
+  /* 标准蓝品牌色 */
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --accent-line: #60a5fa;
+  --accent-bright: #93c5fd;
+  --primary: #2563eb;
+  --primary-hover: #3b82f6;
+  --primary-active: #1d4ed8;
+  --primary-soft: #eff6ff;
+  --primary-border: #bfdbfe;
+
+  /* 侧栏：深蓝而不是墨绿 */
+  --forest: #16325f;
+  --forest-deep: #0e2344;
+  --forest-soft: #24518f;
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(15, 32, 66, 0.04), 0 10px 26px rgba(15, 32, 66, 0.06);
+
+  /* 顶部时钟：平滑的人文无衬线，保留等宽数字 */
+  --font-clock: "Segoe UI Variable Display", "Segoe UI", "SF Pro Display",
+    "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+
+html {
+  background: var(--board);
+}
+
+/* ---------- 顶部时钟：去掉窄体机械字 ---------- */
+
+.shift-clock time {
+  font-family: var(--font-clock);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ---------- 顶部栏：浅色半透明，贴合参考稿 ---------- */
+
+.topbar {
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+}
+
+/* ---------- 侧栏：深蓝渐变 + 标准蓝激活态 ---------- */
+
+.rail {
+  background: linear-gradient(180deg, #0d2444 0%, #163a6d 58%, #0b1f3d 100%);
+}
+
+.rail-nav a.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.rail-nav a.is-active::before {
+  background: #fff;
+}
+
+.rail-nav a.is-active:hover {
+  background: var(--accent-hover);
+}
+
+/* ---------- 随工单横幅：深蓝改亮蓝，观感更轻 ---------- */
+
+.traveler {
+  background:
+    radial-gradient(circle at 84% 10%, rgba(96, 165, 250, 0.3), transparent 38%),
+    linear-gradient(122deg, #14315f 0%, #1d4b8f 58%, #2563eb 100%);
+  border-color: #1d4b8f;
+  border-radius: var(--radius);
+  box-shadow: 0 18px 40px rgba(15, 43, 90, 0.18);
+}
+
+/* ---------- 卡片统一圆角与柔和投影 ---------- */
+
+.dashboard-card,
+.orders-board,
+.trace-panel,
+.data-surface,
+.inventory-overview,
+.quality-note {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.dashboard-card {
+  border-top: 1px solid var(--line);
+}
+
+.order-list {
+  border-top: 0;
+}
+
+.dashboard-card-head {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dashboard-card-copy h2 {
+  font-size: 14.5px;
+  margin: 2px 0;
+}
+
+.dashboard-card-copy p {
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.dashboard-kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+
+.dashboard-count {
+  font-size: 11.5px;
+}
+
+.dashboard-empty {
+  padding: 18px 16px;
+  font-size: 12px;
+}
+
+/* ---------- KPI 指标卡（4 张，替代原来的单条指标带） ---------- */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 16px 0 18px;
+}
+
+.kpi-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px 18px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.kpi-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border-radius: 12px;
+  color: #fff;
+}
+
+.kpi-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.kpi-icon.is-blue {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+}
+
+.kpi-icon.is-green {
+  background: linear-gradient(135deg, #34d399, #10b981);
+}
+
+.kpi-icon.is-orange {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+}
+
+.kpi-icon.is-purple {
+  background: linear-gradient(135deg, #a78bfa, #8b5cf6);
+}
+
+.kpi-body {
+  min-width: 0;
+}
+
+.kpi-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.kpi-value {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 2px 0 0;
+}
+
+.kpi-value strong {
+  color: var(--ink);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-value small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kpi-note {
+  margin: 3px 0 0;
+  color: var(--muted-2);
+  font-size: 11.5px;
+}
+
+.kpi-note.is-risk {
+  color: var(--signal);
+}
+
+/* ---------- 工作台 12 栅格 ---------- */
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.dash-span {
+  min-width: 0;
+}
+
+.dash-span-4 { grid-column: span 4; }
+.dash-span-5 { grid-column: span 5; }
+.dash-span-7 { grid-column: span 7; }
+.dash-span-8 { grid-column: span 8; }
+
+/* ---------- 生产趋势图 ---------- */
+
+.trend-chart {
+  display: flex;
+  gap: 8px;
+  padding: 6px 16px 0;
+}
+
+.trend-y-axis {
+  display: flex;
+  min-width: 34px;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 2px 0 4px;
+  color: var(--muted-2);
+  font-size: 10.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-plot {
+  flex: 1;
+  min-width: 0;
+  height: 168px;
+}
+
+.trend-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.trend-grid line {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.trend-plan-line {
+  fill: none;
+  stroke: #94a3b8;
+  stroke-width: 1.6;
+  stroke-dasharray: 5 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-actual-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-actual-area {
+  fill: url(#trend-actual-fill);
+  stroke: none;
+}
+
+.trend-x-axis {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 16px 0 58px;
+  color: var(--muted-2);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-legend {
+  display: flex;
+  gap: 14px;
+  padding: 8px 16px 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.trend-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  margin-right: 5px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+.trend-legend i.is-plan { background: #94a3b8; }
+.trend-legend i.is-actual { background: var(--accent); }
+
+.chart-data {
+  margin: 8px 16px 14px;
+  font-size: 11.5px;
+}
+
+.chart-data summary {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.chart-data-scroll {
+  max-height: 160px;
+  margin-top: 6px;
+  overflow: auto;
+}
+
+.chart-data table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.chart-data th,
+.chart-data td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+/* ---------- 紧凑化：工单队列 / 动态 / 状态 / 不良 / 批次脉络 ---------- */
+
+/* 工单队列放进 7 列栅格后要更扁：原来的 104px 行高太占空间 */
+.order-queue-card .order-list {
+  max-height: 430px;
+  overflow-y: auto;
+}
+
+.order-queue-card .order-row {
+  min-height: 0;
+  padding: 11px 14px;
+  gap: 12px;
+  grid-template-columns:
+    minmax(118px, 0.95fr) minmax(126px, 1.15fr)
+    minmax(76px, 0.62fr) minmax(104px, 0.8fr) 24px;
+}
+
+.order-queue-card .order-progress-head strong {
+  font-size: 13px;
+}
+
+.order-list .order-row {
+  padding: 11px 16px;
+}
+
+.order-row .order-number {
+  font-size: 13px;
+}
+
+.order-row .order-product {
+  font-size: 12.5px;
+}
+
+.order-row .order-spec,
+.order-row .order-stage-meta {
+  font-size: 11px;
+}
+
+.status-body {
+  gap: 14px;
+  padding: 12px 16px 16px;
+}
+
+.status-donut {
+  width: 128px;
+  height: 128px;
+}
+
+.status-legend {
+  gap: 6px;
+  font-size: 12px;
+}
+
+.defect-bars {
+  padding: 6px 16px 14px;
+}
+
+.defect-bar-head {
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.activity-feed .activity-item {
+  padding: 9px 16px;
+}
+
+.activity-item .activity-kind {
+  font-size: 10.5px;
+}
+
+.activity-item strong {
+  font-size: 12.5px;
+}
+
+.activity-item small {
+  font-size: 11px;
+}
+
+.trace-canvas {
+  gap: 10px;
+  padding: 12px 16px 16px;
+}
+
+.trace-head {
+  padding: 14px 16px 10px;
+}
+
+.trace-source {
+  padding: 10px 12px;
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 1180px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dash-span-4,
+  .dash-span-5,
+  .dash-span-7,
+  .dash-span-8 {
+    grid-column: span 12;
+  }
+}
+
+@media (max-width: 700px) {
+  .kpi-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dash-grid {
+    gap: 12px;
+  }
+
+  .trend-plot {
+    height: 140px;
+  }
+
+  .trend-x-axis {
+    padding-left: 16px;
+  }
+}
+
+

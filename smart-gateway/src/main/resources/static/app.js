@@ -38,6 +38,8 @@
     loadingOrder: null,
     ordersPage: { current: 1, size: 10, total: 0, pages: 0 },
     orderStatusCounts: null,
+    // 生产趋势：live 模式额外拉一页较大工单量，按计划完工日 / 实际完工日聚合近 7 天
+    trend: { orders: null, loaded: false, loading: false, error: '' },
     orderExtras: {},
     // 派工候选人：live 模式来自 GET /system/user/list，演示模式取自演示数据集
     users: [],
@@ -749,32 +751,43 @@
 
   function renderMetrics() {
     const metrics = calculateMetrics();
+    const completionRate = Math.round((metrics.completed / Math.max(1, metrics.planned)) * 100);
+    const cards = [
+      {
+        tone: 'blue', icon: 'orders', label: '今日计划总量',
+        value: formatNumber(metrics.planned), unit: metrics.unitText,
+        note: `${metrics.orderCount} 张工单 · ${metrics.workCenterCount} 个工作中心`
+      },
+      {
+        tone: 'green', icon: 'tasks', label: '已完成',
+        value: formatNumber(metrics.completed), unit: `${completionRate}%`,
+        note: `距计划还差 ${formatNumber(Math.max(0, metrics.planned - metrics.completed))} ${metrics.unitText}`
+      },
+      {
+        tone: 'orange', icon: 'quality', label: '一次合格率',
+        value: metrics.firstPass.toFixed(1), unit: '%',
+        note: `合格 ${formatNumber(metrics.qualified)} / 完成 ${formatNumber(metrics.completed)}`
+      },
+      {
+        tone: 'purple', icon: 'alert', label: '交期风险',
+        value: String(metrics.risks), unit: '张',
+        note: metrics.risks
+          ? `在制 ${metrics.inProgress} 张 · 已暂停 ${metrics.paused} 张`
+          : `在制 ${metrics.inProgress} 张，暂无逾期风险`
+      }
+    ];
     return `
-      <section class="metric-rail" aria-label="生产指标">
-        <div class="metric">
-          <div class="metric-label">计划总量</div>
-          <div class="metric-value"><strong>${formatNumber(metrics.planned)}</strong><span>${escapeHtml(metrics.unitText)}</span></div>
-          <div class="metric-note">${metrics.orderCount} 张工单 · ${metrics.workCenterCount} 个工作中心</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">已完成</div>
-          <div class="metric-value"><strong>${formatNumber(metrics.completed)}</strong><span>${Math.round((metrics.completed / Math.max(1, metrics.planned)) * 100)}%</span></div>
-          <div class="metric-note">距计划还差 ${formatNumber(Math.max(0, metrics.planned - metrics.completed))} ${escapeHtml(metrics.unitText)}</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">一次合格率</div>
-          <div class="metric-value"><strong>${metrics.firstPass.toFixed(1)}</strong><span>%</span></div>
-          <div class="metric-note">合格 ${formatNumber(metrics.qualified)} / 完成 ${formatNumber(metrics.completed)}</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">交期风险</div>
-          <div class="metric-value"><strong>${metrics.risks}</strong><span>张</span></div>
-          <div class="metric-note ${metrics.risks ? 'is-risk' : ''}">${
-            metrics.risks
-              ? `在制 ${metrics.inProgress} 张 · 已暂停 ${metrics.paused} 张`
-              : `在制 ${metrics.inProgress} 张，暂无逾期风险`
-          }</div>
-        </div>
+      <section class="kpi-grid" aria-label="生产指标">
+        ${cards.map((card) => `
+          <article class="kpi-card">
+            <span class="kpi-icon is-${card.tone}" aria-hidden="true">${icon(card.icon)}</span>
+            <div class="kpi-body">
+              <p class="kpi-label">${escapeHtml(card.label)}</p>
+              <p class="kpi-value"><strong>${card.value}</strong><small>${escapeHtml(card.unit)}</small></p>
+              <p class="kpi-note${card.tone === 'purple' && metrics.risks ? ' is-risk' : ''}">${escapeHtml(card.note)}</p>
+            </div>
+          </article>
+        `).join('')}
       </section>
     `;
   }
@@ -782,6 +795,155 @@
   function toTimestamp(value) {
     const time = value ? new Date(value).getTime() : 0;
     return Number.isFinite(time) ? time : 0;
+  }
+
+  /* ---------- 生产趋势（近 7 天，真实工单聚合） ----------
+     口径：按工单「计划完工日」汇总计划量、按「实际完工日」汇总完工量。
+     这是基于真实工单记录的聚合，不是插值伪造的曲线；后端没有更细粒度的
+     按日产量接口，因此时间粒度只到「天」，卡片副标题里写明口径。 */
+
+  const TREND_DAYS = 7;
+
+  async function ensureTrendData() {
+    if (state.mode !== 'live') return;
+    if (state.trend.loading || state.trend.loaded) return;
+    state.trend.loading = true;
+    try {
+      const result = await api.pageOrders({ current: 1, size: 200 });
+      state.trend.orders = result.records || [];
+      state.trend.loaded = true;
+      state.trend.error = '';
+    } catch (error) {
+      state.trend.error = error.message;
+    }
+    state.trend.loading = false;
+    render();
+  }
+
+  function buildTrendSeries() {
+    const source = state.mode === 'live' ? (state.trend.orders || []) : state.orders;
+    const startOfDay = (value) => {
+      const date = new Date(value);
+      date.setHours(0, 0, 0, 0);
+      return date.getTime();
+    };
+    const today = startOfDay(Date.now());
+    const buckets = [];
+    for (let offset = TREND_DAYS - 1; offset >= 0; offset -= 1) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - offset);
+      buckets.push({
+        time: date.getTime(),
+        label: `${date.getMonth() + 1}/${date.getDate()}`,
+        plan: 0,
+        actual: 0
+      });
+    }
+    const index = new Map(buckets.map((bucket, position) => [bucket.time, position]));
+    source.forEach((order) => {
+      const planTime = toTimestamp(order.planEndTime);
+      if (planTime) {
+        const position = index.get(startOfDay(planTime));
+        if (position != null) buckets[position].plan += Number(order.planQuantity || 0);
+      }
+      const actualTime = toTimestamp(order.actualEndTime);
+      if (actualTime) {
+        const position = index.get(startOfDay(actualTime));
+        if (position != null) buckets[position].actual += Number(order.completedQuantity || 0);
+      }
+    });
+    const max = Math.max(1, ...buckets.flatMap((bucket) => [bucket.plan, bucket.actual]));
+    return {
+      buckets,
+      max,
+      hasData: buckets.some((bucket) => bucket.plan > 0 || bucket.actual > 0)
+    };
+  }
+
+  function renderProductionTrend() {
+    const live = state.mode === 'live';
+    const series = buildTrendSeries();
+    const { buckets, max, hasData } = series;
+    const width = 660;
+    const height = 190;
+    const padX = 8;
+    const padY = 14;
+    const plotWidth = width - padX * 2;
+    const plotHeight = height - padY * 2;
+    const xAt = (position) => padX + (buckets.length <= 1 ? plotWidth / 2 : (plotWidth * position) / (buckets.length - 1));
+    const yAt = (value) => padY + plotHeight * (1 - Math.min(1, value / max));
+    const linePath = (key) => buckets
+      .map((bucket, position) => `${position === 0 ? 'M' : 'L'}${xAt(position).toFixed(1)},${yAt(bucket[key]).toFixed(1)}`)
+      .join(' ');
+    const areaPath = (key) => `${linePath(key)} L${xAt(buckets.length - 1).toFixed(1)},${(padY + plotHeight).toFixed(1)} L${xAt(0).toFixed(1)},${(padY + plotHeight).toFixed(1)} Z`;
+    const gridValues = [max, Math.round(max / 2), 0];
+
+    let body;
+    if (live && !state.trend.loaded && !state.trend.error) {
+      body = '<div class="dashboard-empty">正在读取工单数据…</div>';
+    } else if (state.trend.error) {
+      body = `<div class="dashboard-empty">工单数据读取失败：${escapeHtml(state.trend.error)}</div>`;
+    } else if (!hasData) {
+      body = '<div class="dashboard-empty">近 7 天没有计划完工或实际完工的工单记录。</div>';
+    } else {
+      body = `
+        <div class="trend-chart">
+          <div class="trend-y-axis" aria-hidden="true">
+            ${gridValues.map((value) => `<span>${formatNumber(value)}</span>`).join('')}
+          </div>
+          <div class="trend-plot">
+            <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-labelledby="trend-svg-title trend-svg-desc">
+              <title id="trend-svg-title">近 7 天计划量与完工量</title>
+              <desc id="trend-svg-desc">${buckets.map((bucket) => `${bucket.label} 计划 ${formatNumber(bucket.plan)}，完工 ${formatNumber(bucket.actual)}`).join('；')}</desc>
+              <defs>
+                <linearGradient id="trend-actual-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="rgba(37, 99, 235, 0.28)"/>
+                  <stop offset="100%" stop-color="rgba(37, 99, 235, 0)"/>
+                </linearGradient>
+              </defs>
+              <g class="trend-grid">
+                ${gridValues.map((value) => `<line x1="${padX}" y1="${yAt(value).toFixed(1)}" x2="${width - padX}" y2="${yAt(value).toFixed(1)}"/>`).join('')}
+              </g>
+              <path class="trend-plan-line" d="${linePath('plan')}"/>
+              <path class="trend-actual-area" d="${areaPath('actual')}"/>
+              <path class="trend-actual-line" d="${linePath('actual')}"/>
+            </svg>
+          </div>
+        </div>
+        <div class="trend-x-axis" aria-hidden="true">
+          ${buckets.map((bucket) => `<span>${bucket.label}</span>`).join('')}
+        </div>
+        <div class="trend-legend">
+          <span><i class="is-plan"></i>计划量</span>
+          <span><i class="is-actual"></i>完工量</span>
+        </div>
+        <details class="chart-data">
+          <summary>查看趋势数据表</summary>
+          <div class="chart-data-scroll">
+            <table>
+              <thead><tr><th>日期</th><th>计划量</th><th>完工量</th></tr></thead>
+              <tbody>${buckets.map((bucket) => `<tr><td>${bucket.label}</td><td>${formatNumber(bucket.plan)}</td><td>${formatNumber(bucket.actual)}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </details>
+      `;
+    }
+
+    return `
+      <section class="dashboard-card trend-card" aria-labelledby="trend-title">
+        <div class="dashboard-card-head">
+          <div class="dashboard-card-copy">
+            <p class="dashboard-kicker">${icon('trend')} OUTPUT TREND</p>
+            <h2 id="trend-title">生产趋势</h2>
+            <p>${live
+              ? '近 7 天，按工单计划完工日与实际完工日汇总（单位：件 / 台）。'
+              : '演示数据集按工单计划与实际完工日汇总，不是实时产量。'}</p>
+          </div>
+          <span class="dashboard-count">近 ${TREND_DAYS} 天</span>
+        </div>
+        ${body}
+      </section>
+    `;
   }
 
   // 工单状态分布：live 用 GET /order/stats/status 的全库计数（不受列表分页影响）；
@@ -810,32 +972,67 @@
     return [...counts.values()].sort((a, b) => b.count - a.count || a.code - b.code);
   }
 
+  // 工单状态配色（与状态机语义一致：在制蓝、暂停橙、完工绿、终态灰）
+  const ORDER_STATUS_COLORS = {
+    1: '#94a3b8',
+    2: '#64748b',
+    3: '#0891b2',
+    4: '#2563eb',
+    5: '#f59e0b',
+    6: '#10b981',
+    7: '#475569',
+    8: '#ef4444'
+  };
+
   function renderOrderStatusBoard() {
     const live = state.mode === 'live';
     const facts = buildOrderStatusFacts();
     const total = facts ? facts.reduce((sum, row) => sum + row.count, 0) : 0;
-    const max = Math.max(1, ...(facts || []).map((row) => row.count));
     let body;
     if (facts === null) {
-      body = '<div class="empty-state">状态统计接口尚未返回数据，请重新连接网关。</div>';
+      body = '<div class="dashboard-empty">状态统计接口尚未返回数据，请重新连接网关。</div>';
     } else if (!facts.length) {
-      body = '<div class="empty-state">当前没有工单记录。</div>';
+      body = '<div class="dashboard-empty">当前没有工单记录。</div>';
     } else {
+      const dominant = facts[0];
+      let cursor = 0;
+      const gradient = facts.map((row, position) => {
+        const start = cursor;
+        const share = total ? (row.count / total) * 100 : 0;
+        cursor += share;
+        const end = position === facts.length - 1 ? 100 : cursor;
+        return `${ORDER_STATUS_COLORS[row.code] || '#94a3b8'} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+      }).join(', ');
       body = `
-        <div class="defect-bars">
-          ${facts.map((row) => `
-            <div class="defect-bar">
-              <div class="defect-bar-head"><span>${escapeHtml(row.label)}</span><strong>${row.count}</strong></div>
-              <div class="defect-bar-track" style="--value:${Math.round((row.count / max) * 100)}%"><span></span></div>
+        <div class="status-body">
+          <figure class="status-figure" aria-labelledby="status-board-caption">
+            <div class="status-donut" style="background:conic-gradient(from 0deg, ${gradient})">
+              <span class="status-donut-center">
+                <strong>${Math.round((dominant.count / Math.max(1, total)) * 100)}%</strong>
+                <small>${escapeHtml(dominant.label)}</small>
+              </span>
             </div>
-          `).join('')}
+            <figcaption id="status-board-caption" class="sr-only">
+              ${facts.map((row) => `${row.label} ${row.count} 张，占 ${Math.round((row.count / Math.max(1, total)) * 100)}%`).join('；')}
+            </figcaption>
+          </figure>
+          <ul class="status-legend">
+            ${facts.map((row) => `
+              <li>
+                <i style="--swatch:${ORDER_STATUS_COLORS[row.code] || '#94a3b8'}" aria-hidden="true"></i>
+                <span>${escapeHtml(row.label)}</span>
+                <strong>${row.count}</strong>
+                <small>${Math.round((row.count / Math.max(1, total)) * 100)}%</small>
+              </li>
+            `).join('')}
+          </ul>
         </div>`;
     }
     return `
-      <section class="dashboard-card" aria-labelledby="status-board-title">
+      <section class="dashboard-card status-card" aria-labelledby="status-board-title">
         <div class="dashboard-card-head">
           <div class="dashboard-card-copy">
-            <p class="dashboard-kicker">${icon('trend')} ORDER STATUS</p>
+            <p class="dashboard-kicker">${icon('pie')} ORDER STATUS</p>
             <h2 id="status-board-title">工单状态分布</h2>
             <p>${live
               ? '来自网关 /order/stats/status 的全库计数，不受列表分页影响。'
@@ -1006,7 +1203,7 @@
   }
 
   function renderRecentActivity() {
-    const items = recentActivityItems();
+    const items = recentActivityItems(5);
     return `
       <section class="dashboard-card activity-card" aria-labelledby="activity-title">
         <div class="dashboard-card-head">
@@ -1141,39 +1338,8 @@
     return decisions;
   }
 
-  function renderDecisions() {
-    const decisions = buildDecisions();
-    return `
-      <aside class="decision-rail" aria-labelledby="decision-title">
-        <div class="decision-head">
-          <div>
-            <h2 id="decision-title">待办事项</h2>
-            <p>按当前工单、任务与库存状态自动汇总</p>
-          </div>
-          <span class="decision-count">${decisions.length}</span>
-        </div>
-        <div class="decision-list">
-          ${
-            decisions.length
-              ? decisions.map((item) => `
-            <article class="decision-item">
-              <span class="decision-kicker ${item.urgent ? 'is-urgent' : ''}">${escapeHtml(item.kicker)}</span>
-              <h3>${escapeHtml(item.title)}</h3>
-              <p>${escapeHtml(item.detail)}</p>
-              <button class="decision-action" type="button" data-action="${item.action}" data-order="${item.orderId}">
-                ${escapeHtml(item.label)} ${icon('arrow')}
-              </button>
-            </article>
-          `).join('')
-              : '<div class="decision-empty">当前没有会阻断后道工序的待办。</div>'
-          }
-        </div>
-        <div class="decision-foot">
-          待办由工单状态、任务状态与库存可用量推导；系统未提供安灯与班次安全数据。
-        </div>
-      </aside>
-    `;
-  }
+  // 待办事项卡片已按需求从工作台移除，只保留顶栏消息组件的提醒入口
+  // （buildDecisions 仍被顶栏铃铛的 updateNotices 使用）。
 
   function renderTraceOverview() {
     const root = state.trace.root;
@@ -1229,40 +1395,42 @@
 
   function renderToday() {
     const order = activeOrder();
-    const current = order ? currentTaskFor(order.id) : null;
-    const visibleOrders = state.orders.filter((item) => item.status !== 7 && item.status !== 8).slice(0, 6);
     const createButton = `<button class="button primary" type="button" data-action="create-order">${icon('plus')} 新建工单</button>`;
     return `
-      ${pageHead('生产运营工作台', '当前班次的关键指标、在制随工单与待办，数据来自网关或演示数据集。', createButton)}
+      ${pageHead('生产运营工作台', '当前班次的关键指标、在制随工单与生产动态，数据来自网关或演示数据集。', createButton)}
       ${renderTraveler(order)}
       ${renderMetrics()}
-      <div class="insight-grid">
-        ${renderOrderStatusBoard()}
-        ${renderDefectComposition()}
+      <div class="dash-grid">
+        <div class="dash-span dash-span-8">${renderProductionTrend()}</div>
+        <div class="dash-span dash-span-4">${renderOrderStatusBoard()}</div>
+        <div class="dash-span dash-span-8">${renderRecentActivity()}</div>
+        <div class="dash-span dash-span-4">${renderDefectComposition()}</div>
+        <div class="dash-span dash-span-7">${renderOrderQueue()}</div>
+        <div class="dash-span dash-span-5">${renderTraceOverview()}</div>
       </div>
-      <div class="today-grid">
-        <section class="orders-board" aria-labelledby="order-queue-title">
-          <div class="section-title">
-            <div>
-              <h2 id="order-queue-title">工单队列</h2>
-              <p>按交期与阻断风险排序</p>
-            </div>
-            <div class="board-legend">
-              <span><i></i>正常推进</span>
-              <span><i class="risk"></i>需要介入</span>
-              <a class="count" href="#/orders">全部 ${state.orders.length}</a>
-            </div>
+    `;
+  }
+
+  function renderOrderQueue() {
+    const visibleOrders = state.orders.filter((item) => item.status !== 7 && item.status !== 8).slice(0, 6);
+    return `
+      <section class="dashboard-card order-queue-card" aria-labelledby="order-queue-title">
+        <div class="dashboard-card-head">
+          <div class="dashboard-card-copy">
+            <p class="dashboard-kicker">${icon('orders')} ORDER QUEUE</p>
+            <h2 id="order-queue-title">工单队列</h2>
+            <p>按交期与阻断风险排序</p>
           </div>
-          <div class="order-list">
-            ${visibleOrders.map(renderOrderRow).join('')}
+          <div class="board-legend">
+            <span><i></i>正常推进</span>
+            <span><i class="risk"></i>需要介入</span>
+            <a class="count" href="#/orders">全部 ${state.orders.length}</a>
           </div>
-        </section>
-        ${renderDecisions()}
-      </div>
-      <div class="today-lower">
-        ${renderRecentActivity()}
-        ${renderTraceOverview()}
-      </div>
+        </div>
+        <div class="order-list">
+          ${visibleOrders.length ? visibleOrders.map(renderOrderRow).join('') : '<div class="dashboard-empty">当前没有在制工单。</div>'}
+        </div>
+      </section>
     `;
   }
 
@@ -3787,6 +3955,7 @@
     state.sync.running = false;
     state.sync.syncedAt = new Date();
     render();
+    if (parseRoute().view === 'today') ensureTrendData();
   }
 
   async function refreshOrderDetail(orderId) {
@@ -4363,6 +4532,7 @@
     state.user = demo.user;
     state.ordersPage = { current: 1, size: 10, total: 0, pages: 0 };
     state.orderStatusCounts = null;
+    state.trend = { orders: null, loaded: false, loading: false, error: '' };
     state.orderExtras = {};
     state.loadingOrder = null;
     state.users = [];
@@ -4898,6 +5068,9 @@
     if (state.mode === 'live' && route.view === 'materials') {
       loadInventoryOps();
     }
+    if (state.mode === 'live' && route.view === 'today') {
+      ensureTrendData();
+    }
   });
 
   updateClock();
@@ -4914,5 +5087,6 @@
     const initialView = parseRoute().view;
     if (initialView === 'basic') loadBasicTab();
     if (initialView === 'materials') loadInventoryOps();
+    if (initialView === 'today') ensureTrendData();
   }
 })();
