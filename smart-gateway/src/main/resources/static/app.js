@@ -52,7 +52,7 @@
     // 派工候选人：live 模式来自 GET /system/user/list，演示模式取自演示数据集
     users: [],
     usersState: { loading: false, loaded: false, error: '' },
-    // 基础资料（只读）：产品 / 物料 / BOM / 工艺路线
+    // 基础资料：产品 / 物料直接增删改，BOM / 工艺路线按「草稿→生效」版本化维护
     basic: {
       tab: 'products',       // products | materials | bom | routes
       productQuery: '',
@@ -62,15 +62,18 @@
       productList: [],       // 当前页产品
       productOptions: [],    // 供 BOM / 工艺路线选择的产品下拉（一次取 200 条）
       materialRows: [],
+      materialOptions: [],   // 供 BOM 明细选择的物料下拉（GET /material/list）
       selectedProductId: null,
       bomVersions: [],
       activeBom: null,
+      bomDetail: null,       // 版本列表里点开查看的某个 BOM（含明细），用于生效前核对草稿
       bomTree: null,
       bomTreeError: '',
       requirementItems: null,
       routes: [],
       activeRoute: null,
       routeSteps: null,
+      routeDetail: null,     // 同上，某个工艺路线版本（含工序）
       loading: false,
       loadingLabel: '',
       error: '',
@@ -1536,7 +1539,7 @@
           <p>指标按计量单位分组统计，不跨单位相加；比率类指标统一标注口径范围</p>
         </div>
         ${renderMetrics()}
-        <div class="dash-2col">
+        <div class="dash-2col dash-2col-fill">
           ${renderProductionTrend()}
           ${renderOrderQueue()}
         </div>
@@ -2553,8 +2556,8 @@
 
 
   /* ==========================================================
-     基础资料（只读）：产品 / 物料 / BOM / 工艺路线
-     写入接口本期未接入，页面只做查询与下钻，不提供新建/编辑按钮。
+     基础资料：产品 / 物料 / BOM / 工艺路线
+     产品与物料按普通主数据增删改；BOM / 工艺路线按「草稿 → 生效 → 失效」版本化维护。
      ========================================================== */
 
   let basicSearchTimer = null;
@@ -2593,10 +2596,12 @@
         data-action="basic-tab" data-tab="${value}" aria-pressed="${tab === value}">${label}</button>
     `).join('');
     return `
-      ${pageHead('基础资料', '产品、物料、BOM 与工艺路线的只读视图。工单创建时会锁定这里的版本快照。')}
+      ${pageHead('基础资料', '产品、BOM 与工艺路线按「草稿 → 生效」版本化维护；工单创建时锁定当时的版本快照，之后改主数据不影响已下达工单。')}
       <div class="toolbar">
         <div class="filter-set" role="group" aria-label="基础资料分类">${tabs}</div>
-        <span class="section-note" style="margin:0">只读：写入接口本期未接入</span>
+        <span class="section-note" style="margin:0">${state.mode === 'live'
+          ? '产品 / 物料 / BOM / 工艺路线都可写入，BOM 与工艺路线走「草稿 → 生效」'
+          : '演示模式：只读演示数据集，不调用网关写入接口'}</span>
       </div>
       ${renderBasicBody()}
     `;
@@ -2630,6 +2635,7 @@
           <span class="sr-only">搜索产品</span>
           <input type="search" placeholder="搜索产品编码或名称" value="${escapeHtml(basic.productQuery)}" data-input="basic-product-search">
         </label>
+        ${live ? `<button class="button primary" type="button" data-action="create-product">${icon('plus')} 新建产品</button>` : ''}
       </div>`;
     if (!rows.length) {
       return `${head}${emptyState('没有匹配的产品',
@@ -2645,6 +2651,8 @@
         <td>${product.status == null ? '<span class="status-pill tone-neutral">—</span>' : (Number(product.status) === 1 ? '<span class="status-pill tone-success">启用</span>' : '<span class="status-pill tone-caution">停用</span>')}</td>
         <td class="table-actions">
           <button class="button small" type="button" data-action="basic-product" data-product="${product.id}">详情</button>
+          ${live ? `<button class="button small" type="button" data-action="edit-product" data-product="${product.id}">编辑</button>` : ''}
+          ${live ? `<button class="button small danger" type="button" data-action="delete-product" data-product="${product.id}">删除</button>` : ''}
         </td>
       </tr>
     `).join('');
@@ -2679,6 +2687,8 @@
           <span class="sr-only">搜索物料</span>
           <input type="search" placeholder="搜索物料编码或名称" value="${escapeHtml(basic.materialQuery)}" data-input="basic-material-search">
         </label>
+        ${live ? `<button class="button primary" type="button" data-action="create-material">${icon('plus')} 新建物料</button>` : ''}
+        <span class="section-note" style="margin:0">物料是 BOM 明细与库存的主体，编码全局唯一</span>
       </div>`;
     if (!basic.materialRows.length) {
       return `${head}${emptyState('没有匹配的物料', '当前条件下没有查询到物料，可清空搜索词重试。')}`;
@@ -2692,6 +2702,10 @@
         <td class="num">${material.safetyStock == null ? '—' : formatNumber(material.safetyStock)}</td>
         <td>${Number(material.isBatchManaged) === 1 ? '<span class="status-pill tone-active">是</span>' : '<span class="status-pill tone-neutral">否</span>'}</td>
         <td>${Number(material.status) === 1 ? '<span class="status-pill tone-success">启用</span>' : '<span class="status-pill tone-caution">停用</span>'}</td>
+        <td class="table-actions">
+          <button class="button small" type="button" data-action="edit-material" data-material="${material.id}">编辑</button>
+          <button class="button small danger" type="button" data-action="delete-material" data-material="${material.id}">删除</button>
+        </td>
       </tr>
     `).join('');
     return `
@@ -2699,7 +2713,7 @@
       <section class="data-surface" aria-label="物料主数据列表">
         <div class="table-scroll">
           <table class="data-table">
-            <thead><tr><th>物料 / 编码</th><th>规格</th><th>单位</th><th>类型</th><th>安全库存</th><th>批次管理</th><th>状态</th></tr></thead>
+            <thead><tr><th>物料 / 编码</th><th>规格</th><th>单位</th><th>类型</th><th>安全库存</th><th>批次管理</th><th>状态</th><th>操作</th></tr></thead>
             <tbody>${body}</tbody>
           </table>
         </div>
@@ -2772,14 +2786,21 @@
     }
     const bom = basic.activeBom;
     const versions = basic.bomVersions || [];
-    const versionRows = versions.map((item) => `
+    const versionRows = versions.map((item) => {
+      const isDraft = Number(item.status) === 1;
+      const actions = live ? `
+          <button class="button small" type="button" data-action="basic-bom-detail" data-bom="${item.id}">明细</button>
+          ${isDraft ? `<button class="button small primary" type="button" data-action="basic-activate" data-kind="bom" data-id="${item.id}" data-version="${escapeHtml(item.bomVersion)}">生效</button>` : ''}
+          ${isDraft ? `<button class="button small danger" type="button" data-action="basic-delete" data-kind="bom" data-id="${item.id}" data-version="${escapeHtml(item.bomVersion)}">删除</button>` : ''}` : '';
+      return `
       <tr>
         <td><strong>${escapeHtml(item.bomVersion)}</strong></td>
         <td>${versionPill(item.status)}</td>
         <td>${escapeHtml(item.effectiveDate || '—')}</td>
         <td>${escapeHtml(item.remark || '—')}</td>
-      </tr>
-    `).join('');
+        <td class="table-actions">${actions}</td>
+      </tr>`;
+    }).join('');
     const itemRows = (bom?.items || []).map((item) => `
       <tr>
         <td>${escapeHtml(item.seqNo)}</td>
@@ -2803,12 +2824,37 @@
         <td>${Number(item.isBatchManaged) === 1 ? '是' : '否'}</td>
       </tr>
     `).join('');
+    // 版本明细：生效前用来核对草稿到底写了什么行（列表接口不返回 items）
+    const detail = basic.bomDetail;
+    const detailRows = (detail?.items || []).map((item) => `
+      <tr>
+        <td>${escapeHtml(item.seqNo ?? '—')}</td>
+        <td><strong>${escapeHtml(item.materialCode || '')}</strong><br><small>${escapeHtml(item.materialName || '')}</small></td>
+        <td>${escapeHtml(item.materialSpec || '—')}</td>
+        <td class="num">${formatNumber(item.quantity)} ${escapeHtml(item.unit || '')}</td>
+        <td class="num">${(Number(item.lossRate || 0) * 100).toFixed(2)}%</td>
+        <td>${escapeHtml(item.remark || '—')}</td>
+      </tr>`).join('');
+    const detailSection = detail ? `
+      <section class="data-surface" aria-label="BOM 版本明细" style="margin-top:16px">
+        <div class="list-foot" style="border-top:0">
+          <span>版本 <strong>${escapeHtml(detail.bomVersion)}</strong> ${versionPill(detail.status)} · ${(detail.items || []).length} 行明细</span>
+          <button class="button small" type="button" data-action="basic-close-bom-detail">收起</button>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>序</th><th>物料</th><th>规格</th><th>单位用量</th><th>损耗率</th><th>备注</th></tr></thead>
+            <tbody>${detailRows || '<tr><td colspan="6">该版本还没有明细行</td></tr>'}</tbody>
+          </table>
+        </div>
+      </section>` : '';
     return `
       ${selector}
       <div class="toolbar">
+        ${live ? `<button class="button primary" type="button" data-action="create-bom">${icon('plus')} 新建 BOM 草稿</button>` : ''}
         <button class="button small" type="button" data-action="basic-load-tree">展开多层 BOM 树</button>
         ${bom ? `<button class="button small" type="button" data-action="basic-load-items" data-bom="${bom.id}">查看需求素材</button>` : ''}
-        <span class="section-note" style="margin:0">BOM 与工艺路线无写入接口，本期只读</span>
+        <span class="section-note" style="margin:0">草稿生效后才参与工单需求计算；生效会自动把同产品其他生效版本置为失效</span>
       </div>
       ${bom ? `
         <section class="data-surface" aria-label="当前生效 BOM">
@@ -2819,17 +2865,18 @@
               <tbody>${itemRows || '<tr><td colspan="6">该 BOM 没有明细</td></tr>'}</tbody>
             </table>
           </div>
-        </section>` : emptyState('该产品没有生效 BOM', '需要先创建并审核生效一个 BOM 版本，工单才能计算物料需求。')}
+        </section>` : emptyState('该产品没有生效 BOM', '没有生效 BOM 就无法计算物料需求，工单齐套分析会拿不到任何行。可在上方「新建 BOM 草稿」后点「生效」。')}
       ${versions.length ? `
         <section class="data-surface" aria-label="BOM 版本列表" style="margin-top:16px">
           <div class="list-foot" style="border-top:0"><span>全部版本（${versions.length}）</span></div>
           <div class="table-scroll">
             <table class="data-table">
-              <thead><tr><th>版本</th><th>状态</th><th>生效日期</th><th>变更说明</th></tr></thead>
+              <thead><tr><th>版本</th><th>状态</th><th>生效日期</th><th>变更说明</th><th>操作</th></tr></thead>
               <tbody>${versionRows}</tbody>
             </table>
           </div>
         </section>` : ''}
+      ${detailSection}
       ${tree}
       ${requirementRows.length ? `
         <section class="data-surface" aria-label="BOM 需求素材" style="margin-top:16px">
@@ -2876,7 +2923,7 @@
     }
     const route = basic.activeRoute;
     const steps = basic.routeSteps || route?.steps || [];
-    const stepRows = steps.map((step) => `
+    const stepRowsHtml = (list) => list.map((step) => `
       <tr>
         <td class="num"><strong>${escapeHtml(step.stepNo)}</strong></td>
         <td>${escapeHtml(step.stepName)}</td>
@@ -2887,17 +2934,40 @@
       </tr>
     `).join('');
     const versions = basic.routes || [];
-    const versionRows = versions.map((item) => `
+    const versionRows = versions.map((item) => {
+      const isDraft = Number(item.status) === 1;
+      const actions = `
+          <button class="button small" type="button" data-action="basic-route-detail" data-route="${item.id}">工序</button>
+          ${isDraft ? `<button class="button small primary" type="button" data-action="basic-activate" data-kind="route" data-id="${item.id}" data-version="${escapeHtml(item.routeVersion)}">生效</button>` : ''}
+          ${isDraft ? `<button class="button small danger" type="button" data-action="basic-delete" data-kind="route" data-id="${item.id}" data-version="${escapeHtml(item.routeVersion)}">删除</button>` : ''}`;
+      return `
       <tr>
         <td><strong>${escapeHtml(item.routeVersion)}</strong></td>
         <td>${versionPill(item.status)}</td>
         <td>${escapeHtml(item.effectiveDate || '—')}</td>
         <td>${escapeHtml(item.remark || '—')}</td>
-      </tr>
-    `).join('');
+        <td class="table-actions">${actions}</td>
+      </tr>`;
+    }).join('');
+    const routeDetail = basic.routeDetail;
+    const detailSteps = routeDetail?.steps || [];
+    const detailSection = routeDetail ? `
+      <section class="data-surface" aria-label="工艺路线版本工序" style="margin-top:16px">
+        <div class="list-foot" style="border-top:0">
+          <span>版本 <strong>${escapeHtml(routeDetail.routeVersion)}</strong> ${versionPill(routeDetail.status)} · ${detailSteps.length} 道工序</span>
+          <button class="button small" type="button" data-action="basic-close-route-detail">收起</button>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>工序号</th><th>工序名称</th><th>工作中心</th><th>标准工时(h)</th><th>质检点</th><th>作业指导</th></tr></thead>
+            <tbody>${stepRowsHtml(detailSteps) || '<tr><td colspan="6">该版本还没有工序</td></tr>'}</tbody>
+          </table>
+        </div>
+      </section>` : '';
     return `
       ${selector}
       <div class="toolbar">
+        <button class="button primary" type="button" data-action="create-route">${icon('plus')} 新建工艺路线草稿</button>
         ${route ? `<button class="button small" type="button" data-action="basic-load-steps" data-route="${route.id}">刷新工序</button>` : ''}
         <span class="section-note" style="margin:0">质检点为强制门禁：工序报满后须质检合格才可流转下一道</span>
       </div>
@@ -2907,20 +2977,21 @@
           <div class="table-scroll">
             <table class="data-table">
               <thead><tr><th>工序号</th><th>工序名称</th><th>工作中心</th><th>标准工时(h)</th><th>质检点</th><th>作业指导</th></tr></thead>
-              <tbody>${stepRows || '<tr><td colspan="6">该工艺路线没有工序</td></tr>'}</tbody>
+              <tbody>${stepRowsHtml(steps) || '<tr><td colspan="6">该工艺路线没有工序</td></tr>'}</tbody>
             </table>
           </div>
-        </section>` : emptyState('该产品没有生效工艺路线', '没有工艺路线就无法生成工序任务，工单下达前必须先配置并生效。')}
+        </section>` : emptyState('该产品没有生效工艺路线', '没有工艺路线就无法生成工序任务，工单下达前必须先配置并生效。可在上方「新建工艺路线草稿」后点「生效」。')}
       ${versions.length ? `
         <section class="data-surface" aria-label="工艺路线版本列表" style="margin-top:16px">
           <div class="list-foot" style="border-top:0"><span>全部版本（${versions.length}）</span></div>
           <div class="table-scroll">
             <table class="data-table">
-              <thead><tr><th>版本</th><th>状态</th><th>生效日期</th><th>变更说明</th></tr></thead>
+              <thead><tr><th>版本</th><th>状态</th><th>生效日期</th><th>变更说明</th><th>操作</th></tr></thead>
               <tbody>${versionRows}</tbody>
             </table>
           </div>
         </section>` : ''}
+      ${detailSection}
     `;
   }
 
@@ -2982,6 +3053,7 @@
     basic.bomTree = null;
     basic.bomTreeError = '';
     basic.requirementItems = null;
+    basic.bomDetail = null;
     const [versions, active] = await Promise.allSettled([
       api.listBomsByProduct(productId),
       api.getActiveBom(productId)
@@ -3018,6 +3090,7 @@
     const basic = state.basic;
     basic.routeSteps = null;
     basic.activeRoute = null;
+    basic.routeDetail = null;
     const [versions, active] = await Promise.allSettled([
       api.listRoutesByProduct(productId),
       api.getActiveRoute(productId)
@@ -3058,10 +3131,712 @@
             <button class="button small" type="button" data-action="basic-goto" data-tab="routes" data-product="${product.id}">查看工艺路线</button>
           </div>
         ` : '<p class="muted">演示模式不调用网关，BOM 与工艺路线结构未内置。</p>'}
-        <div class="drawer-callout">基础资料为只读视图：本期未接入产品 / 物料 / BOM / 工艺路线的写入接口。</div>
+        <div class="drawer-callout">四类主数据都可在工作台维护：产品 / 物料直接新建编辑，BOM 与工艺路线在对应分页新建草稿、核对明细后点「生效」。</div>
       </div>
     `;
     openDrawer(product.productCode, product.productName, body);
+  }
+
+  // 产品表单弹窗：不传 productId 为新建，传入则为编辑（从当前页列表取数据预填）。
+  // 字段与后端 ProductSaveDTO 对齐：productCode / productName / unit 必填。
+  function openProductModal(productId) {
+    const product = productId
+      ? state.basic.productList.find((item) => String(item.id) === String(productId))
+      : null;
+    if (productId && !product) {
+      showToast('没有找到该产品，请刷新后重试。', 'error');
+      return;
+    }
+    const isEdit = Boolean(product);
+    const val = (key, fallback = '') => escapeHtml(product ? (product[key] ?? fallback) : fallback);
+    const categorySel = (product?.category === '半成品') ? 'selected' : '';
+    const statusSel = (product && Number(product.status) === 0) ? 'selected' : '';
+    const body = `
+      <p class="modal-intro">${isEdit
+        ? `编辑产品 ${val('productCode')}（PUT /product-service/product/${product.id}）。修改后编码仍需全局唯一。`
+        : '新建产品会写入产品主数据（POST /product-service/product）。产品编码全局唯一，重复时服务端会返回友好错误。'}</p>
+      <form data-form="product-form" ${isEdit ? `data-id="${product.id}"` : ''}>
+        <div class="form-grid">
+          <div class="field">
+            <label for="product-code">产品编码</label>
+            <input id="product-code" name="productCode" value="${val('productCode')}" placeholder="例如 PRD-DB-X3" maxlength="64" required>
+          </div>
+          <div class="field">
+            <label for="product-name">产品名称</label>
+            <input id="product-name" name="productName" value="${val('productName')}" placeholder="例如 智能电表 X3" required>
+          </div>
+          <div class="field">
+            <label for="product-spec">规格型号</label>
+            <input id="product-spec" name="spec" value="${val('spec')}" placeholder="例如 220V/5(80)A">
+          </div>
+          <div class="field">
+            <label for="product-unit">计量单位</label>
+            <input id="product-unit" name="unit" value="${product ? val('unit') : '台'}" required>
+          </div>
+          <div class="field">
+            <label for="product-category">分类</label>
+            <select id="product-category" name="category">
+              <option value="成品" ${isEdit ? (product?.category === '成品' ? 'selected' : '') : 'selected'}>成品</option>
+              <option value="半成品" ${categorySel}>半成品</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="product-safety">安全库存</label>
+            <input id="product-safety" name="safetyStock" type="number" min="0" step="any" value="${product ? (product.safetyStock ?? 0) : 0}">
+          </div>
+          <div class="field">
+            <label for="product-status">状态</label>
+            <select id="product-status" name="status">
+              <option value="1" ${isEdit ? (Number(product.status) === 1 ? 'selected' : '') : 'selected'}>启用</option>
+              <option value="0" ${statusSel}>停用</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label for="product-remark">备注</label>
+            <textarea id="product-remark" name="remark" placeholder="可选：用途、变更说明等">${val('remark')}</textarea>
+          </div>
+        </div>
+        <div class="form-note">编码、名称、单位为必填项；安全库存不能为负数。</div>
+        <div class="error-note" id="product-form-error" role="alert"></div>
+        <div class="form-actions">
+          <button class="button" type="button" data-action="close-modal">取消</button>
+          <button class="button primary" type="submit">${isEdit ? '保存修改' : '创建产品'}</button>
+        </div>
+      </form>
+    `;
+    showModal('基础资料', isEdit ? '编辑产品' : '新建产品', body);
+  }
+
+  // 提交新建/编辑：有 data-id 走 PUT，否则走 POST；成功后刷新当前页并让产品下拉重新加载
+  async function handleSaveProduct(form) {
+    const data = Object.fromEntries(new FormData(form).entries());
+    const id = form.dataset.id;
+    const isEdit = Boolean(id);
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = document.getElementById('product-form-error');
+    const submitLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = '正在保存';
+    errorBox.classList.remove('is-visible');
+    const payload = {
+      productCode: (data.productCode || '').trim(),
+      productName: (data.productName || '').trim(),
+      spec: (data.spec || '').trim() || undefined,
+      unit: (data.unit || '').trim(),
+      category: (data.category || '').trim() || undefined,
+      safetyStock: Number(data.safetyStock || 0),
+      status: Number(data.status),
+      remark: (data.remark || '').trim() || undefined
+    };
+    try {
+      if (isEdit) await api.updateProduct(id, payload);
+      else await api.createProduct(payload);
+      closeModal();
+      if (!isEdit) state.basic.productPage.current = 1;
+      state.basic.productOptions = [];
+      await loadBasicProducts();
+      render();
+      showToast(`产品 ${payload.productCode} ${isEdit ? '更新' : '创建'}成功。`);
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('is-visible');
+      button.disabled = false;
+      button.textContent = submitLabel;
+    }
+  }
+
+  // 删除确认弹窗：后端在 BOM 引用时会拒绝，错误落在弹窗内
+  function openDeleteProductConfirm(productId) {
+    const product = state.basic.productList.find((item) => String(item.id) === String(productId));
+    if (!product) {
+      showToast('没有找到该产品，请刷新后重试。', 'error');
+      return;
+    }
+    const body = `
+      <div class="confirm-box">
+        <strong>删除产品 ${escapeHtml(product.productCode)}</strong>
+        <p>${escapeHtml(product.productName)}。若该产品已被 BOM 引用，服务端会拒绝删除。</p>
+      </div>
+      <form data-form="delete-product" data-id="${product.id}">
+        <div class="error-note" id="delete-product-error" role="alert"></div>
+        <div class="form-actions">
+          <button class="button" type="button" data-action="close-modal">取消</button>
+          <button class="button danger" type="submit">确认删除</button>
+        </div>
+      </form>
+    `;
+    showModal('基础资料', '删除产品', body);
+  }
+
+  async function handleDeleteProduct(form) {
+    const id = form.dataset.id;
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = document.getElementById('delete-product-error');
+    button.disabled = true;
+    button.textContent = '正在删除';
+    errorBox.classList.remove('is-visible');
+    try {
+      await api.deleteProduct(id);
+      closeModal();
+      state.basic.productOptions = [];
+      await loadBasicProducts();
+      render();
+      showToast('产品已删除。');
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('is-visible');
+      button.disabled = false;
+      button.textContent = '确认删除';
+    }
+  }
+
+  /* ==========================================================
+     BOM / 工艺路线写入：新建草稿 → 核对明细 → 生效 / 删除
+     后端只认 materialId，所以 BOM 明细的物料下拉必须先取到真实主数据。
+     ========================================================== */
+
+  function basicSelectedProduct() {
+    const id = state.basic.selectedProductId;
+    if (!id) return null;
+    return state.basic.productOptions.find((item) => String(item.id) === String(id)) || null;
+  }
+
+  async function loadBasicMaterialOptions() {
+    if (state.basic.materialOptions.length) return state.basic.materialOptions;
+    const list = await api.listMaterials();
+    state.basic.materialOptions = Array.isArray(list) ? list : [];
+    return state.basic.materialOptions;
+  }
+
+  function bomItemRowHtml(materials) {
+    const options = ['<option value="">请选择物料</option>'].concat(materials.map((item) => `
+      <option value="${item.id}">${escapeHtml(item.materialCode)} · ${escapeHtml(item.materialName)}${Number(item.status) === 0 ? '（停用）' : ''}</option>
+    `)).join('');
+    return `
+      <div class="master-line" data-line>
+        <div class="field line-wide">
+          <label>物料</label>
+          <select data-field="materialId">${options}</select>
+        </div>
+        <div class="field">
+          <label>单位用量</label>
+          <input data-field="quantity" type="number" min="0.0001" step="any" placeholder="如 2">
+        </div>
+        <div class="field line-narrow">
+          <label>损耗率</label>
+          <input data-field="lossRate" type="number" min="0" max="1" step="0.0001" value="0">
+        </div>
+        <button class="button small" type="button" data-action="bom-remove-item">删除</button>
+      </div>`;
+  }
+
+  async function openBomModal() {
+    const product = basicSelectedProduct();
+    if (!product) {
+      showToast('请先在上方选择一个产品。', 'warning');
+      return;
+    }
+    let materials = [];
+    try {
+      materials = await loadBasicMaterialOptions();
+    } catch (error) {
+      showToast(`物料主数据加载失败：${error.message}`, 'error');
+      return;
+    }
+    if (!materials.length) {
+      showToast('物料主数据为空，BOM 至少需要一行物料。', 'warning');
+      return;
+    }
+    const body = `
+      <p class="modal-intro">为产品 ${escapeHtml(product.productCode)}（${escapeHtml(product.productName)}）新建 BOM 草稿（POST /product-service/bom）。草稿不参与工单需求计算，需在版本列表点「生效」才启用。</p>
+      <form data-form="bom-form" data-product="${product.id}">
+        <div class="form-grid">
+          <div class="field">
+            <label for="bom-version">版本号</label>
+            <input id="bom-version" data-field="bomVersion" placeholder="留空按已生效版本数自动生成 V1/V2…" maxlength="32">
+          </div>
+          <div class="field">
+            <label for="bom-remark">变更说明</label>
+            <input id="bom-remark" data-field="remark" placeholder="可选：为什么升版本" maxlength="200">
+          </div>
+        </div>
+        <div class="master-lines" id="bom-item-rows">${bomItemRowHtml(materials)}</div>
+        <div class="toolbar" style="margin-top:10px">
+          <button class="button small" type="button" data-action="bom-add-item">${icon('plus')} 添加一行物料</button>
+        </div>
+        <div class="form-note">单位用量＝1 台产品消耗量；损耗率填小数（0.02 即 2%）；同一物料只能出现一行。</div>
+        <div class="error-note" id="bom-form-error" role="alert"></div>
+        <div class="form-actions">
+          <button class="button" type="button" data-action="close-modal">取消</button>
+          <button class="button primary" type="submit">创建草稿</button>
+        </div>
+      </form>
+    `;
+    showModal('基础资料', '新建 BOM 草稿', body);
+  }
+
+  async function handleSaveBom(form) {
+    const errorBox = document.getElementById('bom-form-error');
+    const button = form.querySelector('button[type="submit"]');
+    const fail = (message) => {
+      errorBox.textContent = message;
+      errorBox.classList.add('is-visible');
+    };
+    errorBox.classList.remove('is-visible');
+    const rows = [...form.querySelectorAll('[data-line]')].map((line) => ({
+      materialId: Number(line.querySelector('[data-field="materialId"]').value),
+      quantity: Number(line.querySelector('[data-field="quantity"]').value),
+      lossRate: Number(line.querySelector('[data-field="lossRate"]').value || 0)
+    }));
+    if (!rows.length) {
+      fail('至少需要一行物料。');
+      return;
+    }
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const at = `第 ${index + 1} 行：`;
+      if (!Number.isFinite(row.materialId) || row.materialId <= 0) {
+        fail(`${at}请选择物料。`);
+        return;
+      }
+      if (!Number.isFinite(row.quantity) || row.quantity <= 0) {
+        fail(`${at}单位用量必须大于 0。`);
+        return;
+      }
+      if (!Number.isFinite(row.lossRate) || row.lossRate < 0 || row.lossRate > 1) {
+        fail(`${at}损耗率请填 0～1 之间的小数（0.02 表示 2%）。`);
+        return;
+      }
+      if (rows.findIndex((item) => item.materialId === row.materialId) !== index) {
+        fail(`${at}同一物料重复，请合并为一行。`);
+        return;
+      }
+    }
+    const payload = {
+      productId: Number(form.dataset.product),
+      bomVersion: String(form.querySelector('[data-field="bomVersion"]').value || '').trim() || undefined,
+      remark: String(form.querySelector('[data-field="remark"]').value || '').trim() || undefined,
+      items: rows.map((row, index) => ({
+        materialId: row.materialId,
+        quantity: row.quantity,
+        lossRate: row.lossRate,
+        seqNo: index + 1
+      }))
+    };
+    button.disabled = true;
+    button.textContent = '正在创建';
+    try {
+      const created = await api.createBom(payload);
+      closeModal();
+      await loadBasicBom(payload.productId);
+      state.basic.bomDetail = created || null;
+      render();
+      showToast(`BOM ${created?.bomVersion || payload.bomVersion || ''} 草稿已创建（${payload.items.length} 行明细），核对后点「生效」。`);
+    } catch (error) {
+      fail(error.message);
+      button.disabled = false;
+      button.textContent = '创建草稿';
+    }
+  }
+
+  function routeStepRowHtml(stepNo) {
+    return `
+      <div class="master-line" data-line>
+        <div class="field line-narrow">
+          <label>工序号</label>
+          <input data-field="stepNo" type="number" min="1" step="1" value="${stepNo}">
+        </div>
+        <div class="field line-wide">
+          <label>工序名称</label>
+          <input data-field="stepName" placeholder="如 外壳组装" maxlength="64">
+        </div>
+        <div class="field">
+          <label>工作中心</label>
+          <input data-field="workCenter" placeholder="如 装配一车间" maxlength="64">
+        </div>
+        <div class="field line-narrow">
+          <label>标准工时(h)</label>
+          <input data-field="standardHours" type="number" min="0" step="0.01" value="0">
+        </div>
+        <div class="field line-narrow">
+          <label>质检点</label>
+          <select data-field="isInspection">
+            <option value="0">否</option>
+            <option value="1">是</option>
+          </select>
+        </div>
+        <div class="field line-wide">
+          <label>作业指导</label>
+          <input data-field="description" placeholder="可选：该工序的作业要求" maxlength="200">
+        </div>
+        <button class="button small" type="button" data-action="route-remove-step">删除</button>
+      </div>`;
+  }
+
+  function openRouteModal() {
+    const product = basicSelectedProduct();
+    if (!product) {
+      showToast('请先在上方选择一个产品。', 'warning');
+      return;
+    }
+    const body = `
+      <p class="modal-intro">为产品 ${escapeHtml(product.productCode)}（${escapeHtml(product.productName)}）新建工艺路线草稿（POST /product-service/route）。工单下达时按生效路线逐道生成工序任务，所以草稿需先生效才能用。</p>
+      <form data-form="route-form" data-product="${product.id}">
+        <div class="form-grid">
+          <div class="field">
+            <label for="route-version">版本号</label>
+            <input id="route-version" data-field="routeVersion" placeholder="留空自动生成 V1/V2…" maxlength="32">
+          </div>
+          <div class="field">
+            <label for="route-remark">变更说明</label>
+            <input id="route-remark" data-field="remark" placeholder="可选：为什么升版本" maxlength="200">
+          </div>
+        </div>
+        <div class="master-lines" id="route-step-rows">${routeStepRowHtml(10)}</div>
+        <div class="toolbar" style="margin-top:10px">
+          <button class="button small" type="button" data-action="route-add-step">${icon('plus')} 添加一道工序</button>
+        </div>
+        <div class="form-note">工序号建议按 10/20/30 留间隔，便于插工序；质检点为强制门禁，报满后须质检合格才流转下一道。</div>
+        <div class="error-note" id="route-form-error" role="alert"></div>
+        <div class="form-actions">
+          <button class="button" type="button" data-action="close-modal">取消</button>
+          <button class="button primary" type="submit">创建草稿</button>
+        </div>
+      </form>
+    `;
+    showModal('基础资料', '新建工艺路线草稿', body);
+  }
+
+  async function handleSaveRoute(form) {
+    const errorBox = document.getElementById('route-form-error');
+    const button = form.querySelector('button[type="submit"]');
+    const fail = (message) => {
+      errorBox.textContent = message;
+      errorBox.classList.add('is-visible');
+    };
+    errorBox.classList.remove('is-visible');
+    const rows = [...form.querySelectorAll('[data-line]')].map((line) => ({
+      stepNo: Number(line.querySelector('[data-field="stepNo"]').value),
+      stepName: String(line.querySelector('[data-field="stepName"]').value || '').trim(),
+      workCenter: String(line.querySelector('[data-field="workCenter"]').value || '').trim() || undefined,
+      standardHours: Number(line.querySelector('[data-field="standardHours"]').value || 0),
+      isInspection: Number(line.querySelector('[data-field="isInspection"]').value || 0),
+      description: String(line.querySelector('[data-field="description"]').value || '').trim() || undefined
+    }));
+    if (!rows.length) {
+      fail('至少需要一道工序。');
+      return;
+    }
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const at = `第 ${index + 1} 道工序：`;
+      if (!Number.isInteger(row.stepNo) || row.stepNo <= 0) {
+        fail(`${at}工序号必须是大于 0 的整数。`);
+        return;
+      }
+      if (!row.stepName) {
+        fail(`${at}工序名称不能为空。`);
+        return;
+      }
+      if (!Number.isFinite(row.standardHours) || row.standardHours < 0) {
+        fail(`${at}标准工时不能为负数。`);
+        return;
+      }
+      if (rows.findIndex((item) => item.stepNo === row.stepNo) !== index) {
+        fail(`${at}工序号 ${row.stepNo} 重复。`);
+        return;
+      }
+    }
+    const productId = Number(form.dataset.product);
+    const payload = {
+      productId,
+      routeVersion: String(form.querySelector('[data-field="routeVersion"]').value || '').trim() || undefined,
+      remark: String(form.querySelector('[data-field="remark"]').value || '').trim() || undefined,
+      steps: rows
+    };
+    button.disabled = true;
+    button.textContent = '正在创建';
+    try {
+      const created = await api.createRoute(payload);
+      closeModal();
+      await loadBasicRoutes(productId);
+      state.basic.routeDetail = created || null;
+      render();
+      showToast(`工艺路线 ${created?.routeVersion || payload.routeVersion || ''} 草稿已创建（${rows.length} 道工序），核对后点「生效」。`);
+    } catch (error) {
+      fail(error.message);
+      button.disabled = false;
+      button.textContent = '创建草稿';
+    }
+  }
+
+  function addMasterLine(containerId, buildRow) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.insertAdjacentHTML('beforeend', buildRow(container.children.length + 1));
+    container.lastElementChild?.querySelector('input, select')?.focus({ preventScroll: true });
+  }
+
+  function removeMasterLine(containerId, element, message) {
+    const container = document.getElementById(containerId);
+    const line = element.closest('[data-line]');
+    if (!container || !line) return;
+    if (container.children.length <= 1) {
+      showToast(message, 'warning');
+      return;
+    }
+    line.remove();
+  }
+
+  async function loadBasicBomDetail(bomId) {
+    try {
+      state.basic.bomDetail = await api.getBomDetail(bomId) || null;
+      render();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function loadBasicRouteDetail(routeId) {
+    try {
+      state.basic.routeDetail = await api.getRouteDetail(routeId) || null;
+      render();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  function openBasicVersionConfirm(kind, op, id, version) {
+    const isBom = kind === 'bom';
+    const label = isBom ? 'BOM' : '工艺路线';
+    const activate = op === 'activate';
+    const body = `
+      <div class="confirm-box">
+        <strong>${activate ? `将${label}版本 ${escapeHtml(version)} 置为生效？` : `删除${label}草稿 ${escapeHtml(version)}？`}</strong>
+        <p>${activate
+          ? '同一事务内：该版本转为「生效」，同产品其他生效版本自动转为「失效」。已下达工单锁定的是创建时的版本快照，不受本次切换影响。'
+          : '仅草稿可删除，明细/工序随主表一起移除；已生效版本是历史凭证，服务端会拒绝删除。'}</p>
+      </div>
+      <form data-form="basic-version-confirm" data-kind="${kind}" data-op="${op}" data-id="${id}" data-version="${escapeHtml(version)}">
+        ${activate ? `
+        <div class="form-grid">
+          <div class="field">
+            <label for="confirm-effective-date">生效日期（可选，默认今天）</label>
+            <input id="confirm-effective-date" type="date" data-field="effectiveDate">
+          </div>
+        </div>` : ''}
+        <div class="error-note" id="basic-confirm-error" role="alert"></div>
+        <div class="form-actions">
+          <button class="button" type="button" data-action="close-modal">取消</button>
+          <button class="button ${activate ? 'primary' : 'danger'}" type="submit">${activate ? '确认生效' : '确认删除'}</button>
+        </div>
+      </form>
+    `;
+    showModal('基础资料', activate ? `生效${label}` : `删除${label}草稿`, body);
+  }
+
+  async function handleBasicVersionConfirm(form) {
+    const { kind, op, id, version } = form.dataset;
+    const isBom = kind === 'bom';
+    const activate = op === 'activate';
+    const label = isBom ? 'BOM' : '工艺路线';
+    const button = form.querySelector('button[type="submit"]');
+    const submitLabel = button.textContent;
+    const errorBox = document.getElementById('basic-confirm-error');
+    const dateInput = form.querySelector('[data-field="effectiveDate"]');
+    button.disabled = true;
+    button.textContent = '正在提交';
+    errorBox.classList.remove('is-visible');
+    try {
+      if (activate) {
+        await (isBom ? api.activateBom(id, dateInput?.value || undefined) : api.activateRoute(id, dateInput?.value || undefined));
+      } else {
+        await (isBom ? api.deleteBom(id) : api.deleteRoute(id));
+      }
+      closeModal();
+      const productId = state.basic.selectedProductId;
+      if (isBom) await loadBasicBom(productId);
+      else await loadBasicRoutes(productId);
+      render();
+      showToast(`${label} ${version ? `${version} ` : ''}${activate ? '已生效。' : '草稿已删除。'}`);
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('is-visible');
+      button.disabled = false;
+      button.textContent = submitLabel;
+    }
+  }
+
+  /* ==========================================================
+     物料主数据写入：新建 / 编辑 / 删除（被 BOM 引用时服务端拒绝删除）
+     ========================================================== */
+
+  function openMaterialModal(materialId) {
+    const material = materialId
+      ? state.basic.materialRows.find((item) => String(item.id) === String(materialId))
+      : null;
+    if (materialId && !material) {
+      showToast('没有找到该物料，请刷新后重试。', 'error');
+      return;
+    }
+    const isEdit = Boolean(material);
+    const val = (key, fallback = '') => escapeHtml(material ? (material[key] ?? fallback) : fallback);
+    const typeOption = (value, label) => `<option value="${value}"${(material?.materialType || 'RAW') === value ? ' selected' : ''}>${label}</option>`;
+    const batchSel = (material && Number(material.isBatchManaged) === 0) ? 'selected' : '';
+    const statusSel = (material && Number(material.status) === 0) ? 'selected' : '';
+    const body = `
+      <p class="modal-intro">${isEdit
+        ? `编辑物料 ${val('materialCode')}（PUT /product-service/material/${material.id}）。编码仍需全局唯一。`
+        : '新建物料会写入物料主数据（POST /product-service/material）。物料是 BOM 明细和库存的主体，编码全局唯一。'}</p>
+      <form data-form="material-form" ${isEdit ? `data-id="${material.id}"` : ''}>
+        <div class="form-grid">
+          <div class="field">
+            <label for="material-code">物料编码</label>
+            <input id="material-code" name="materialCode" value="${val('materialCode')}" placeholder="例如 MAT-MCU-02" maxlength="64" required>
+          </div>
+          <div class="field">
+            <label for="material-name">物料名称</label>
+            <input id="material-name" name="materialName" value="${val('materialName')}" placeholder="例如 计量芯片 MCU-B" required>
+          </div>
+          <div class="field">
+            <label for="material-spec">规格型号</label>
+            <input id="material-spec" name="spec" value="${val('spec')}" placeholder="例如 100uF 16V">
+          </div>
+          <div class="field">
+            <label for="material-unit">计量单位</label>
+            <input id="material-unit" name="unit" value="${material ? val('unit') : '个'}" required>
+          </div>
+          <div class="field">
+            <label for="material-type">类型</label>
+            <select id="material-type" name="materialType">
+              ${typeOption('RAW', 'RAW · 原料')}
+              ${typeOption('AUX', 'AUX · 辅料')}
+              ${typeOption('PACK', 'PACK · 包装')}
+            </select>
+          </div>
+          <div class="field">
+            <label for="material-safety">安全库存</label>
+            <input id="material-safety" name="safetyStock" type="number" min="0" step="any" value="${material ? (material.safetyStock ?? 0) : 0}">
+          </div>
+          <div class="field">
+            <label for="material-batch">批次管理</label>
+            <select id="material-batch" name="isBatchManaged">
+              <option value="1"${isEdit ? (Number(material.isBatchManaged) === 1 ? ' selected' : '') : ' selected'}>是 · 领料必须指定批次</option>
+              <option value="0"${batchSel}>否</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="material-status">状态</label>
+            <select id="material-status" name="status">
+              <option value="1"${isEdit ? (Number(material.status) === 1 ? ' selected' : '') : ' selected'}>启用</option>
+              <option value="0"${statusSel}>停用</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label for="material-remark">备注</label>
+            <textarea id="material-remark" name="remark" placeholder="可选：用途、供应商等">${val('remark')}</textarea>
+          </div>
+        </div>
+        <div class="form-note">编码、名称、单位为必填项；批次管理决定领料时是否强制填批次号。</div>
+        <div class="error-note" id="material-form-error" role="alert"></div>
+        <div class="form-actions">
+          <button class="button" type="button" data-action="close-modal">取消</button>
+          <button class="button primary" type="submit">${isEdit ? '保存修改' : '创建物料'}</button>
+        </div>
+      </form>
+    `;
+    showModal('基础资料', isEdit ? '编辑物料' : '新建物料', body);
+  }
+
+  async function handleSaveMaterial(form) {
+    const data = Object.fromEntries(new FormData(form).entries());
+    const id = form.dataset.id;
+    const isEdit = Boolean(id);
+    const button = form.querySelector('button[type="submit"]');
+    const submitLabel = button.textContent;
+    const errorBox = document.getElementById('material-form-error');
+    const fail = (message) => {
+      errorBox.textContent = message;
+      errorBox.classList.add('is-visible');
+      button.disabled = false;
+      button.textContent = submitLabel;
+    };
+    errorBox.classList.remove('is-visible');
+    const safetyStock = Number(data.safetyStock || 0);
+    if (!Number.isFinite(safetyStock) || safetyStock < 0) {
+      fail('安全库存不能为负数。');
+      return;
+    }
+    button.disabled = true;
+    button.textContent = '正在保存';
+    const payload = {
+      materialCode: (data.materialCode || '').trim(),
+      materialName: (data.materialName || '').trim(),
+      spec: (data.spec || '').trim() || undefined,
+      unit: (data.unit || '').trim(),
+      materialType: data.materialType,
+      safetyStock,
+      isBatchManaged: Number(data.isBatchManaged),
+      status: Number(data.status),
+      remark: (data.remark || '').trim() || undefined
+    };
+    try {
+      if (isEdit) await api.updateMaterial(id, payload);
+      else await api.createMaterial(payload);
+      closeModal();
+      if (!isEdit) state.basic.materialPage.current = 1;
+      // BOM 明细的物料下拉来自 /material/list，主数据变更后必须重新拉取
+      state.basic.materialOptions = [];
+      await loadBasicMaterials();
+      render();
+      showToast(`物料 ${payload.materialCode} ${isEdit ? '更新' : '创建'}成功。`);
+    } catch (error) {
+      fail(error.message);
+    }
+  }
+
+  function openDeleteMaterialConfirm(materialId) {
+    const material = state.basic.materialRows.find((item) => String(item.id) === String(materialId));
+    if (!material) {
+      showToast('没有找到该物料，请刷新后重试。', 'error');
+      return;
+    }
+    const body = `
+      <div class="confirm-box">
+        <strong>删除物料 ${escapeHtml(material.materialCode)}</strong>
+        <p>${escapeHtml(material.materialName)}。被 BOM 明细引用的物料服务端会拒绝删除，请先处理引用它的 BOM 版本。</p>
+      </div>
+      <form data-form="delete-material" data-id="${material.id}">
+        <div class="error-note" id="delete-material-error" role="alert"></div>
+        <div class="form-actions">
+          <button class="button" type="button" data-action="close-modal">取消</button>
+          <button class="button danger" type="submit">确认删除</button>
+        </div>
+      </form>
+    `;
+    showModal('基础资料', '删除物料', body);
+  }
+
+  async function handleDeleteMaterial(form) {
+    const id = form.dataset.id;
+    const button = form.querySelector('button[type="submit"]');
+    const errorBox = document.getElementById('delete-material-error');
+    button.disabled = true;
+    button.textContent = '正在删除';
+    errorBox.classList.remove('is-visible');
+    try {
+      await api.deleteMaterial(id);
+      closeModal();
+      state.basic.materialOptions = [];
+      await loadBasicMaterials();
+      render();
+      showToast('物料已删除。');
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.classList.add('is-visible');
+      button.disabled = false;
+      button.textContent = '确认删除';
+    }
   }
 
   function renderTasks() {
@@ -4889,6 +5664,15 @@
       case 'create-order':
         openCreateOrderModal();
         break;
+      case 'create-product':
+        openProductModal();
+        break;
+      case 'edit-product':
+        openProductModal(actionElement.dataset.product);
+        break;
+      case 'delete-product':
+        openDeleteProductConfirm(actionElement.dataset.product);
+        break;
       case 'create-report':
         if (taskId) openReportModal(taskId);
         else showToast('当前工单没有可报工的工序。', 'warning');
@@ -5023,6 +5807,56 @@
         if (state.mode === 'live') loadBasicTab();
         else render();
         break;
+      case 'create-bom':
+        openBomModal();
+        break;
+      case 'create-material':
+        openMaterialModal();
+        break;
+      case 'edit-material':
+        openMaterialModal(actionElement.dataset.material);
+        break;
+      case 'delete-material':
+        openDeleteMaterialConfirm(actionElement.dataset.material);
+        break;
+      case 'create-route':
+        openRouteModal();
+        break;
+      case 'bom-add-item':
+        addMasterLine('bom-item-rows', () => bomItemRowHtml(state.basic.materialOptions));
+        break;
+      case 'bom-remove-item':
+        removeMasterLine('bom-item-rows', actionElement, 'BOM 至少保留一行明细。');
+        break;
+      case 'route-add-step':
+        addMasterLine('route-step-rows', (count) => routeStepRowHtml(10 * count));
+        break;
+      case 'route-remove-step':
+        removeMasterLine('route-step-rows', actionElement, '工艺路线至少保留一道工序。');
+        break;
+      case 'basic-bom-detail':
+        loadBasicBomDetail(actionElement.dataset.bom);
+        break;
+      case 'basic-close-bom-detail':
+        state.basic.bomDetail = null;
+        render();
+        break;
+      case 'basic-route-detail':
+        loadBasicRouteDetail(actionElement.dataset.route);
+        break;
+      case 'basic-close-route-detail':
+        state.basic.routeDetail = null;
+        render();
+        break;
+      case 'basic-activate':
+      case 'basic-delete':
+        openBasicVersionConfirm(
+          actionElement.dataset.kind,
+          action === 'basic-activate' ? 'activate' : 'delete',
+          actionElement.dataset.id,
+          actionElement.dataset.version
+        );
+        break;
       case 'basic-page': {
         const kind = actionElement.dataset.kind;
         const page = Number(actionElement.dataset.page);
@@ -5073,6 +5907,13 @@
     const formName = form.dataset.form;
     if (formName === 'trace') handleTraceSubmission(form);
     else if (formName === 'create-order') handleCreateOrder(form);
+    else if (formName === 'product-form') handleSaveProduct(form);
+    else if (formName === 'delete-product') handleDeleteProduct(form);
+    else if (formName === 'material-form') handleSaveMaterial(form);
+    else if (formName === 'delete-material') handleDeleteMaterial(form);
+    else if (formName === 'bom-form') handleSaveBom(form);
+    else if (formName === 'route-form') handleSaveRoute(form);
+    else if (formName === 'basic-version-confirm') handleBasicVersionConfirm(form);
     else if (formName === 'report') handleReport(form);
     else if (formName === 'dispatch') handleDispatch(form);
     else if (formName === 'issue' || formName === 'return') handleIssueSubmit(form);
@@ -5119,6 +5960,7 @@
       state.basic.activeRoute = null;
       state.basic.routes = [];
       state.basic.routeSteps = null;
+      state.basic.routeDetail = null;
       if (state.mode === 'live' && state.basic.selectedProductId) loadBasicTab();
       else render();
       return;

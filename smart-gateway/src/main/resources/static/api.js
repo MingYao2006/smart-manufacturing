@@ -103,6 +103,8 @@
 
   const get = (path, query, options) => request(path, { ...options, query });
   const post = (path, body, query) => request(path, { method: 'POST', body, query });
+  const put = (path, body) => request(path, { method: 'PUT', body });
+  const del = (path) => request(path, { method: 'DELETE' });
   const page = (data) => ({
     records: data?.records || [],
     total: Number(data?.total || 0),
@@ -201,15 +203,32 @@
   const getProduct = (id) => get(`${PRODUC}/product/${id}`);
   const getMaterial = (id) => get(`${PRODUC}/material/${id}`);
   const listMaterials = () => get(`${PRODUC}/material/list`);
+  const createProduct = (payload) => post(`${PRODUC}/product`, payload);
+  const updateProduct = (id, payload) => put(`${PRODUC}/product/${id}`, payload);
+  const deleteProduct = (id) => del(`${PRODUC}/product/${id}`);
+  const createMaterial = (payload) => post(`${PRODUC}/material`, payload);
+  const updateMaterial = (id, payload) => put(`${PRODUC}/material/${id}`, payload);
+  const deleteMaterial = (id) => del(`${PRODUC}/material/${id}`);
 
   const listBomsByProduct = (productId) => get(`${PRODUC}/bom/product/${productId}`);
   const getActiveBom = (productId) => get(`${PRODUC}/bom/product/${productId}/active`);
   const getBomTree = (productId) => get(`${PRODUC}/bom/${productId}/tree`);
   const listBomRequirementItems = (bomId) => get(`${PRODUC}/bom/${bomId}/requirement-items`);
+  const getBomDetail = (bomId) => get(`${PRODUC}/bom/${bomId}`);
+  const createBom = (payload) => post(`${PRODUC}/bom`, payload);
+  // effectiveDate 是 @RequestParam（不传则服务端默认今天），留空时不能把空串发过去
+  const activateBom = (bomId, effectiveDate) =>
+    post(`${PRODUC}/bom/${bomId}/activate`, undefined, effectiveDate ? { effectiveDate } : {});
+  const deleteBom = (bomId) => del(`${PRODUC}/bom/${bomId}`);
 
   const listRoutesByProduct = (productId) => get(`${PRODUC}/route/product/${productId}`);
   const getActiveRoute = (productId) => get(`${PRODUC}/route/product/${productId}/active`);
   const listRouteSteps = (routeId) => get(`${PRODUC}/route/${routeId}/steps`);
+  const getRouteDetail = (routeId) => get(`${PRODUC}/route/${routeId}`);
+  const createRoute = (payload) => post(`${PRODUC}/route`, payload);
+  const activateRoute = (routeId, effectiveDate) =>
+    post(`${PRODUC}/route/${routeId}/activate`, undefined, effectiveDate ? { effectiveDate } : {});
+  const deleteRoute = (routeId) => del(`${PRODUC}/route/${routeId}`);
 
   /* ==================== 批次 · 追溯 · 质检 ==================== */
 
@@ -276,13 +295,27 @@
     getProduct,
     getMaterial,
     listMaterials,
+    createProduct,
+    updateProduct,
+    deleteProduct,
+    createMaterial,
+    updateMaterial,
+    deleteMaterial,
     listBomsByProduct,
     getActiveBom,
     getBomTree,
     listBomRequirementItems,
+    getBomDetail,
+    createBom,
+    activateBom,
+    deleteBom,
     listRoutesByProduct,
     getActiveRoute,
     listRouteSteps,
+    getRouteDetail,
+    createRoute,
+    activateRoute,
+    deleteRoute,
 
     getBatch,
     listBatches,

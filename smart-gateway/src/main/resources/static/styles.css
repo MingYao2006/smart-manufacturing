@@ -8015,6 +8015,10 @@ body {
   line-height: 1.4;
 }
 
+.demo-notice.is-compact[hidden] {
+  display: none;
+}
+
 .demo-notice.is-compact p {
   flex: 1;
   min-width: 0;
@@ -8306,4 +8310,85 @@ body {
   .button:hover {
     transform: none;
   }
+}
+
+/* ==========================================================================
+   趋势行等高
+   · 第一行右栏（工单队列）比左栏（生产趋势）高，align-items: start 会把差值
+     留在趋势卡下方，看起来像流水线上方多了一条空隙
+   · 这里让趋势卡拉伸到整行高，多出来的高度全部给折线图
+   ========================================================================== */
+.dash-2col-fill {
+  align-items: stretch;
+}
+
+.dash-2col-fill > .trend-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.dash-2col-fill .trend-chart {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dash-2col-fill .trend-plot {
+  height: auto;
+  min-height: 180px;
+  max-height: 300px;
+}
+
+/* 加载 / 无数据 / 读取失败时同样撑满，不留空白 */
+.dash-2col-fill .dashboard-empty {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+}
+
+/* ========== 基础资料表单：BOM 明细 / 工艺工序行编辑器 ========== */
+
+.master-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 14px;
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+}
+
+.master-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.master-line .field {
+  flex: 1 1 140px;
+}
+
+.master-line .line-wide {
+  flex: 2 1 200px;
+}
+
+.master-line .line-narrow {
+  flex: 0 1 112px;
+}
+
+.master-line .button {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 560px) {
+  .master-line .field,
+  .master-line .line-wide,
+  .master-line .line-narrow {
+    flex: 1 1 100%;
+  }
+}
+
+.modal:has(.master-lines) {
+  width: min(880px, 100%);
 }
