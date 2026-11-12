@@ -1,7 +1,8 @@
 -- =====================================================================
 -- 03 · 库存库 smart_inventory
 -- 表：material_inventory / inventory_transaction / material_reservation
---     / material_issue / material_issue_item / inventory_reconcile_log
+--     / material_issue / material_issue_item / material_issue_outbox
+--     / inventory_reconcile_log
 -- =====================================================================
 
 USE smart_inventory;
@@ -153,6 +154,44 @@ CREATE TABLE material_issue_item (
     KEY idx_issue_item_material_batch (material_id, batch_no),
     KEY idx_issue_item_reservation (reservation_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='领料明细表（批次追溯关键）';
+
+-- ---------------------------------------------------------------------
+-- 领料批次关系 outbox：领料事务内同写，事后异步投递给 smart-quality 建追溯边。
+--
+-- 🔑 为什么需要它：领料（扣库存 + 写流水）是本地事务，建追溯边在另一个服务。
+--    若领料里直接 HTTP 调质量服务，会出现"料扣了、HTTP 超时/服务挂了 → 边没建"。
+--    把"要建边"作为一条记录与扣减同事务写入，事务提交即代表消息必然在库里，
+--    进程崩溃重启后定时扫描仍能补发 → 领料与"记下来"最终一致。
+--
+-- 🔑 uk_outbox_biz(order_id, batch_no)：同一工单同一批次只记一条边，
+--    重复投递（at-least-once）也只落一条，消费端另有唯一索引兜底。
+-- 🔑 target 本来就是空的：领料那刻产品批次还没生成，不是漏写，
+--    等完工生成产品批次后按 production_order_id 统一回填。
+-- ---------------------------------------------------------------------
+DROP TABLE IF EXISTS material_issue_outbox;
+CREATE TABLE material_issue_outbox (
+    id               BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    biz_key          VARCHAR(191)  NOT NULL COMMENT '幂等键 orderId:batchNo',
+    order_id         BIGINT        NOT NULL COMMENT '工单 ID（回填 target 的依据）',
+    order_no         VARCHAR(64)            DEFAULT NULL COMMENT '工单号快照',
+    issue_no         VARCHAR(64)            DEFAULT NULL COMMENT '领料单号',
+    material_id      BIGINT                 DEFAULT NULL COMMENT '物料',
+    material_code    VARCHAR(64)            DEFAULT NULL COMMENT '物料编码快照',
+    batch_no         VARCHAR(64)   NOT NULL COMMENT '领用的物料批次号（追溯起点）',
+    quantity         DECIMAL(18,4) NOT NULL DEFAULT 0.0000 COMMENT '领用数量',
+    payload          TEXT          NOT NULL COMMENT '待投递消息体 JSON',
+    status           TINYINT       NOT NULL DEFAULT 0 COMMENT '0-待投递 1-已投递 2-投递失败(终态)',
+    retry_count      INT           NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    next_retry_time  DATETIME               DEFAULT NULL COMMENT '下次重试时间（指数退避）',
+    last_error       VARCHAR(500)           DEFAULT NULL COMMENT '最后一次失败原因',
+    create_time      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    sent_time        DATETIME               DEFAULT NULL COMMENT '投递成功时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_outbox_biz (biz_key) COMMENT '同一工单同一批次只发一次',
+    KEY idx_outbox_status_retry (status, next_retry_time) COMMENT '定时扫描待投递',
+    KEY idx_outbox_order (order_id) COMMENT '完工回填时按工单定位'
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='领料批次关系 outbox（同事务写，异步建边）';
 
 -- ---------------------------------------------------------------------
 -- 库存对账日志：定时对账发现的不一致记录。对账是分布式方案的最后防线。

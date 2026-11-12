@@ -1,5 +1,6 @@
 package com.smart.product.service;
 
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.constant.CommonConstants;
 import com.smart.common.exception.BusinessException;
 import com.smart.common.result.ErrorCode;
@@ -145,6 +146,7 @@ public class BomService {
      */
     @Transactional(rollbackFor = Exception.class)
     public BomVO createBom(BomCreateDTO dto) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         Product product = productMapper.selectById(dto.getProductId());
         if (product == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "产品不存在: " + dto.getProductId());
@@ -179,7 +181,7 @@ public class BomService {
             throw new BusinessException(ErrorCode.DUPLICATE_KEY,
                     "该产品已存在版本 " + version + " 的 BOM");
         }
-
+// 展示序号的自动兜底计数器
         int seq = 1;
         for (BomItemDTO item : dto.getItems()) {
             BomItem bi = new BomItem();
@@ -212,6 +214,7 @@ public class BomService {
      */
     @Transactional(rollbackFor = Exception.class)
     public BomVO activateBom(Long bomId, LocalDate effectiveDate) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         Bom bom = bomMapper.selectById(bomId);
         if (bom == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "BOM 不存在: " + bomId);
@@ -248,6 +251,7 @@ public class BomService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void deleteBom(Long bomId) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         Bom bom = bomMapper.selectById(bomId);
         if (bom == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "BOM 不存在: " + bomId);
@@ -365,10 +369,12 @@ public class BomService {
         // 一次性查出所有"产品编码 = 物料编码"的映射：用来识别"这个物料其实是半成品"
         // 本项目用产品编码前缀区分半成品（如 PRD-SEMI-*），但更严谨的做法是查 product 表。
         Map<String, Product> semiProductByCode = new HashMap<>();
+        // 本层 BOM 涉及哪些物料编码
         List<String> codes = materialMap.values().stream().map(Material::getMaterialCode).toList();
         if (!codes.isEmpty()) {
             productMapper.selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Product>()
                             .in(Product::getProductCode, codes))
+                    // 结果按编码建索引：code → Product
                     .forEach(p -> semiProductByCode.put(p.getProductCode(), p));
         }
 

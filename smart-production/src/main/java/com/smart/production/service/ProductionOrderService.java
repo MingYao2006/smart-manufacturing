@@ -2,6 +2,7 @@ package com.smart.production.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.context.UserContextHolder;
 import com.smart.common.exception.BusinessException;
 import com.smart.common.result.ErrorCode;
@@ -82,6 +83,7 @@ public class ProductionOrderService {
      */
     @Transactional(rollbackFor = Exception.class)
     public OrderVO createOrder(OrderCreateDTO dto) {
+        RoleGuard.require("新建生产工单只允许生产计划员执行", RoleGuard.PLANNER);
         // ① 产品存在且启用（跨服务 Feign）
         ProductInfo product = productClient.getProduct(dto.getProductId());
         if (product == null) {
@@ -175,6 +177,7 @@ public class ProductionOrderService {
      */
     @Transactional(rollbackFor = Exception.class)
     public OrderVO transit(Long orderId, ProductionOrderStatus target, String reason) {
+        requireTransitionRole(target);
         // 1. 查当前状态
         ProductionOrder order = getOrderEntity(orderId);
         ProductionOrderStatus current = ProductionOrderStatus.of(order.getStatus());
@@ -204,6 +207,24 @@ public class ProductionOrderService {
         log.info("[工单流转] orderNo={} {} → {} reason={} operator={}",
                 order.getOrderNo(), current.getDesc(), target.getDesc(), reason, operatorName);
         return toVO(getOrderEntity(orderId));
+    }
+
+    /**
+     * 工单流转的角色门禁。
+     *
+     * <p>口径：<b>计划类</b>流转（审核、下达、取消、关闭）改的是计划与后续副作用
+     * （下达会展开工序任务、取消会作废工序与预留），只归生产计划员；
+     * <b>现场类</b>流转（开工、暂停、完工）跟着车间走，计划员和操作工都能确认。
+     * 系统管理员在 {@link RoleGuard} 内部统一放行。
+     */
+    private void requireTransitionRole(ProductionOrderStatus target) {
+        switch (target) {
+            case APPROVED, RELEASED, CANCELLED, CLOSED -> RoleGuard.require(
+                    "工单的审核 / 下达 / 取消 / 关闭只允许生产计划员执行", RoleGuard.PLANNER);
+            default -> RoleGuard.require(
+                    "工单的开工 / 暂停 / 完工只允许生产计划员或车间操作工执行",
+                    RoleGuard.PLANNER, RoleGuard.OPERATOR);
+        }
     }
 
     /**

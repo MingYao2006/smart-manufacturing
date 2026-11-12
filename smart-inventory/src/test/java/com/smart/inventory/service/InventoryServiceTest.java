@@ -79,7 +79,8 @@ class InventoryServiceTest {
                 Stub.rule("insert", 1, Stub.returnsInt(1)));
 
         inventoryService = new InventoryService(
-                inventoryMapper.proxy(), reservationMapper.proxy(), transactionMapper.proxy());
+                inventoryMapper.proxy(), reservationMapper.proxy(), transactionMapper.proxy(),
+                (orderId, orderNo, issueNo, materialId, materialCode, batchNo, quantity) -> { });
     }
 
     private ReserveRequest buildRequest(String qty) {
@@ -186,7 +187,8 @@ class InventoryServiceTest {
                 Stub.rule("selectOne", 2, inv -> null));
         transactionMapper = Recorder.of(InventoryTransactionMapper.class);
         inventoryService = new InventoryService(
-                inventoryMapper.proxy(), reservationMapper.proxy(), transactionMapper.proxy());
+                inventoryMapper.proxy(), reservationMapper.proxy(), transactionMapper.proxy(),
+                (orderId, orderNo, issueNo, materialId, materialCode, batchNo, quantity) -> { });
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> inventoryService.reserve(buildRequest("10")));
@@ -224,7 +226,8 @@ class InventoryServiceTest {
         transactionMapper = Recorder.of(InventoryTransactionMapper.class,
                 Stub.rule("insert", 1, Stub.returnsInt(1)));
         inventoryService = new InventoryService(
-                inventoryMapper.proxy(), reservationMapper.proxy(), transactionMapper.proxy());
+                inventoryMapper.proxy(), reservationMapper.proxy(), transactionMapper.proxy(),
+                (orderId, orderNo, issueNo, materialId, materialCode, batchNo, quantity) -> { });
 
         // 故意【倒序】传入：物料 4 在前，物料 1 在后
         RequirementItem big = new RequirementItem();

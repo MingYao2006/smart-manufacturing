@@ -1,0 +1,19 @@
+# SmartMES 运行时镜像：只装 JRE + 已构建好的 jar
+# 与仓库里 6 个多阶段 Dockerfile 不同，这里不需要 Maven 构建阶段，
+# 避免服务器上再拉 Maven 基础镜像 / 下载依赖（在网络受限环境极易超时）。
+FROM eclipse-temurin:21-jre-jammy
+
+ENV TZ=Asia/Shanghai \
+    LANG=C.UTF-8 \
+    JAVA_OPTS="-XX:MaxRAMPercentage=70 -Dfile.encoding=UTF-8"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone
+
+WORKDIR /app
+# 由 docker-compose.yml 通过 volumes 挂载 app/ 下的 jar 到 /app/app.jar
+# 也可以 build 时 COPY 进去；这里用挂载，改 jar 只需 restart，不必重建镜像。
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]

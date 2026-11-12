@@ -1,0 +1,16 @@
+[Unit]
+Description=frp server for SmartMES tunnel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+# 按实际解压路径修改；默认 TOML 版（frp 0.5x+，本部署用 v0.72.0）
+# 若下载的是 0.4x 老版本只认 INI，把下面改成 -c /opt/frp/frps.ini
+ExecStart=/opt/frp/frps -c /opt/frp/frps.toml
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,6 @@
 package com.smart.inventory.service;
 
+import com.smart.common.auth.RoleGuard;
 import com.smart.inventory.entity.InventoryReconcileLog;
 import com.smart.inventory.entity.MaterialInventory;
 import com.smart.inventory.mapper.InventoryReconcileLogMapper;
@@ -53,6 +54,7 @@ public class ReconcileService {
      */
     @Transactional(rollbackFor = Exception.class)
     public List<InventoryReconcileLog> reconcile(boolean autoFix) {
+        RoleGuard.require("库存对账只允许仓库管理员执行", RoleGuard.WAREHOUSE);
         List<MaterialInventory> inventories = inventoryMapper.selectAll();
         Map<String, BigDecimal> ledgerQtyMap = new HashMap<>();
         Map<String, BigDecimal> ledgerReservedMap = new HashMap<>();

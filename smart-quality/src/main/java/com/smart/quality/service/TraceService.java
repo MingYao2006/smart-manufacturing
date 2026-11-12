@@ -315,10 +315,25 @@ public class TraceService {
     /* ==================== 记录批次关系 ==================== */
 
     /**
-     * 记录一条批次关系（领料消耗 / 完工产出）。
+     * 记录一条批次关系（领料消耗 / 完工产出）—— <b>幂等</b>。
      *
-     * <p>⚠️ 必须在领料/完工的<b>同一事务</b>内调用，
-     * 否则会出现"领料成功但追溯关系漏记" —— 追溯链就断了。
+     * <h3>为什么改成"同事务写 outbox + 异步投递"</h3>
+     * 旧方案要求"必须在领料的同一事务内调用"，但建边在另一个服务，
+     * 只能同步 HTTP 调用。一旦质量服务超时/宕机，就是
+     * <b>"料发了本子没写"</b>，追溯链永久断裂。
+     *
+     * <p>新方案：smart-inventory 领料时把"某工单领了某批次料"写进本地 outbox
+     * （与扣减同事务），定时任务再投到本方法。因此：
+     * <ul>
+     *   <li>消息一定在库里，进程崩溃重启也能补发 → 最终一致，不会漏记</li>
+     *   <li>投递是 at-least-once，可能重复 → 本方法必须幂等</li>
+     * </ul>
+     *
+     * <p>幂等键 = 工单号 + 批次号（{@code uk_relation_consume}），
+     * 用 {@code INSERT IGNORE} 在数据库层硬拦，重复投递只记一条边。
+     *
+     * <p>⚠️ 领料阶段 {@code target} 为空是<b>设计</b>：产品批次要等完工才生成，
+     * 不是漏写。完工后由 {@link #bindOrderConsumptionsToProductBatch} 按工单号统一回填。
      */
     public BatchRelation recordRelation(String sourceBatchNo, String targetBatchNo,
                                         Long productionOrderId, String orderNo,
@@ -338,6 +353,14 @@ public class TraceService {
             }
         }
 
+        String type = relationType == null ? "CONSUME" : relationType;
+        BatchRelation existing = relationMapper.selectByBizKey(productionOrderId, sourceBatchNo, type);
+        if (existing != null) {
+            log.info("[批次关系] 幂等跳过 sourceBatchNo={} orderId={}（已存在 id={}）",
+                    sourceBatchNo, productionOrderId, existing.getId());
+            return existing;
+        }
+
         BatchRelation rel = new BatchRelation();
         rel.setSourceBatchId(source.getId());
         rel.setSourceBatchNo(source.getBatchNo());
@@ -346,40 +369,58 @@ public class TraceService {
         rel.setProductionOrderId(productionOrderId);
         rel.setOrderNo(orderNo);
         rel.setQuantity(quantity == null ? BigDecimal.ZERO : quantity);
-        rel.setRelationType(relationType == null ? "CONSUME" : relationType);
+        rel.setRelationType(type);
         rel.setIsReversed(0);
-        relationMapper.insert(rel);
+        // 唯一索引兜底并发：两个投递同时到达时只有一个插入成功，另一个返回 0
+        int inserted = relationMapper.insertIgnore(rel);
+        if (inserted == 0) {
+            BatchRelation raced = relationMapper.selectByBizKey(productionOrderId, sourceBatchNo, type);
+            log.info("[批次关系] 并发幂等命中 sourceBatchNo={} orderId={}", sourceBatchNo, productionOrderId);
+            return raced != null ? raced : rel;
+        }
         log.info("[批次关系] {} --({})--> {} qty={} orderId={}",
                 sourceBatchNo, rel.getRelationType(),
-                target == null ? "(待关联)" : targetBatchNo, rel.getQuantity(), productionOrderId);
+                target == null ? "(待完工回填)" : targetBatchNo, rel.getQuantity(), productionOrderId);
         return rel;
     }
 
     /**
-     * 完工时把"领料阶段记录的待关联关系"回填到产品批次。
+     * 完工时把"领料阶段记录的待关联关系"回填到产品批次 —— <b>幂等、可异步</b>。
      *
      * <p>为什么需要"待关联"中间态：领料时产品批次还不存在（要等完工才有），
      * 所以 relation 的 target 暂时为空。完工生成产品批次后按 productionOrderId 回填。
+     *
+     * <p>为什么可以异步：边在领料时就已经通过 outbox 落库了，数据不会丢，
+     * 晚一点补 target 只是补全指向，不影响追溯链完整性。而且边是异步投递的，
+     * 完全可能"产品批次先生成、边后到"，所以回填必须是<b>反复扫描</b>而不是一次性动作。
+     *
+     * <p>用条件更新 {@code WHERE target_batch_id IS NULL}，重复执行只会命中新到的边，
+     * 已回填的不会被覆盖 → 天然幂等。
      */
     public int bindOrderConsumptionsToProductBatch(Long productionOrderId, String productBatchNo) {
         ProductBatch target = batchMapper.selectByBatchNo(productBatchNo);
         if (target == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "产品批次不存在: " + productBatchNo);
         }
-        List<BatchRelation> pending = new ArrayList<>();
-        for (BatchRelation r : relationMapper.selectByOrderId(productionOrderId)) {
-            if (r.getTargetBatchId() == null) {
-                pending.add(r);
-            }
+        int bound = relationMapper.bindOrderToProductBatch(
+                productionOrderId, target.getId(), target.getBatchNo());
+        if (bound > 0) {
+            log.info("[批次关系回填] orderId={} 关联 {} 条消耗关系 -> 产品批次 {}",
+                    productionOrderId, bound, productBatchNo);
         }
-        for (BatchRelation r : pending) {
-            r.setTargetBatchId(target.getId());
-            r.setTargetBatchNo(target.getBatchNo());
-            relationMapper.updateById(r);
-        }
-        log.info("[批次关系回填] orderId={} 关联 {} 条消耗关系 -> 产品批次 {}",
-                productionOrderId, pending.size(), productBatchNo);
-        return pending.size();
+        return bound;
+    }
+
+    /**
+     * 找出"该回填却还没回填"的工单 ID（去重），供定时异步回填使用。
+     */
+    public List<Long> listPendingBindOrderIds(int limit) {
+        return relationMapper.selectPendingBindOrderIds(limit).stream()
+                .map(m -> m.get("orderId"))
+                .filter(java.util.Objects::nonNull)
+                .map(o -> o instanceof Number n ? n.longValue() : Long.valueOf(o.toString()))
+                .distinct()
+                .toList();
     }
 
     /* ==================== 工具 ==================== */

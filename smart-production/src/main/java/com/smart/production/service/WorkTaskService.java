@@ -1,5 +1,6 @@
 package com.smart.production.service;
 
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.exception.BusinessException;
 import com.smart.common.result.ErrorCode;
 import com.smart.common.util.BizNoGenerator;
@@ -142,6 +143,7 @@ public class WorkTaskService {
 
     @Transactional(rollbackFor = Exception.class)
     public WorkTaskVO dispatch(Long taskId, DispatchDTO dto) {
+        RoleGuard.require("派工（指定操作工与工作中心）只允许生产计划员执行", RoleGuard.PLANNER);
         getTask(taskId);
         workTaskMapper.dispatch(taskId, dto.getOperatorId(), dto.getOperatorName(), dto.getWorkCenter());
         log.info("[派工] taskId={} operator={} center={}", taskId, dto.getOperatorName(), dto.getWorkCenter());
@@ -149,6 +151,22 @@ public class WorkTaskService {
     }
 
     /* ==================== 工序状态流转 + 顺序约束 ==================== */
+
+    /**
+     * 工序执行权限：车间操作工（ADMIN 由 RoleGuard 内部放行），
+     * 且操作工只能动<b>派给本人</b>的工序——未派工就不能自己抢工，也不能替别人报工。
+     */
+    private void requireExecutor(WorkTask task) {
+        RoleGuard.require("工序的开始/暂停/恢复/完成只允许车间操作工执行", RoleGuard.OPERATOR);
+        if (RoleGuard.OPERATOR.equals(RoleGuard.currentRoleOrNull())) {
+            RoleGuard.requireSelf(task.getOperatorId(), "只能操作派给本人的工序，请先由计划员派工");
+        }
+    }
+
+    /** 质检门禁权限：放行与退回都属于质检员的职责，操作工不能自己判合格。 */
+    private void requireInspector() {
+        RoleGuard.require("质检放行/退回只允许质检员执行", RoleGuard.INSPECTOR);
+    }
 
     /**
      * 开始工序。
@@ -165,6 +183,7 @@ public class WorkTaskService {
     @Transactional(rollbackFor = Exception.class)
     public WorkTaskVO startTask(Long taskId, Long operatorId) {
         WorkTask task = getTask(taskId);
+        requireExecutor(task);
         WorkTaskStatus current = WorkTaskStatus.of(task.getStatus());
         if (current != WorkTaskStatus.PENDING) {
             throw new BusinessException(ErrorCode.STATE_TRANSITION_DENIED,
@@ -189,6 +208,7 @@ public class WorkTaskService {
      */
     @Transactional(rollbackFor = Exception.class)
     public WorkTaskVO pauseTask(Long taskId, Long operatorId) {
+        requireExecutor(getTask(taskId));
         return transit(taskId, WorkTaskStatus.PAUSED, operatorId);
     }
 
@@ -197,6 +217,7 @@ public class WorkTaskService {
      */
     @Transactional(rollbackFor = Exception.class)
     public WorkTaskVO resumeTask(Long taskId, Long operatorId) {
+        requireExecutor(getTask(taskId));
         return transit(taskId, WorkTaskStatus.IN_PROGRESS, operatorId);
     }
 
@@ -208,6 +229,7 @@ public class WorkTaskService {
     @Transactional(rollbackFor = Exception.class)
     public WorkTaskVO completeTask(Long taskId, Long operatorId) {
         WorkTask task = getTask(taskId);
+        requireExecutor(task);
         WorkTaskStatus current = WorkTaskStatus.of(task.getStatus());
         WorkTaskStatus target = (task.getIsInspection() != null && task.getIsInspection() == 1)
                 ? WorkTaskStatus.WAIT_INSPECTION : WorkTaskStatus.COMPLETED;
@@ -320,6 +342,7 @@ public class WorkTaskService {
     @Transactional(rollbackFor = Exception.class)
     public WorkTaskVO passInspection(Long taskId, Long operatorId) {
         WorkTask task = getTask(taskId);
+        requireInspector();
         WorkTaskStatus current = WorkTaskStatus.of(task.getStatus());
         if (current != WorkTaskStatus.WAIT_INSPECTION) {
             throw new BusinessException(ErrorCode.STATE_TRANSITION_DENIED,
@@ -341,6 +364,7 @@ public class WorkTaskService {
     @Transactional(rollbackFor = Exception.class)
     public WorkTaskVO rejectInspection(Long taskId, Long operatorId) {
         WorkTask task = getTask(taskId);
+        requireInspector();
         WorkTaskStatus current = WorkTaskStatus.of(task.getStatus());
         if (current != WorkTaskStatus.WAIT_INSPECTION) {
             throw new BusinessException(ErrorCode.STATE_TRANSITION_DENIED,

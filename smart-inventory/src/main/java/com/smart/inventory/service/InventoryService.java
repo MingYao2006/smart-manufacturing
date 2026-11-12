@@ -1,5 +1,6 @@
 package com.smart.inventory.service;
 
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.constant.CommonConstants;
 import com.smart.common.context.UserContextHolder;
 import com.smart.common.exception.BusinessException;
@@ -77,6 +78,7 @@ public class InventoryService {
     private final MaterialInventoryMapper inventoryMapper;
     private final MaterialReservationMapper reservationMapper;
     private final InventoryTransactionMapper transactionMapper;
+    private final IssueRelationPublisher issueRelationPublisher;
 
     /* ==================== 查询 ==================== */
 
@@ -135,6 +137,7 @@ public class InventoryService {
      */
     @Transactional(rollbackFor = Exception.class)
     public ReserveResultVO reserve(ReserveRequest req) {
+        RoleGuard.require("物料预留只允许生产计划员或仓库管理员执行", RoleGuard.PLANNER, RoleGuard.WAREHOUSE);
         Long warehouseId = wid(req.getWarehouseId());
 
         // 1. 幂等：该工单已预留过
@@ -230,6 +233,9 @@ public class InventoryService {
      */
     @Transactional(rollbackFor = Exception.class)
     public int releaseByOrder(Long orderId) {
+        // 计划员取消工单时也会走这里（工单取消要连带释放预留），所以两种角色都放行
+        RoleGuard.require("释放物料预留只允许生产计划员或仓库管理员执行",
+                RoleGuard.PLANNER, RoleGuard.WAREHOUSE);
         List<MaterialReservation> list = reservationMapper.selectByOrderId(orderId);
         int released = 0;
         for (MaterialReservation r : list) {
@@ -330,6 +336,14 @@ public class InventoryService {
                     nz(before.getReservedQuantity()),
                     nz(before.getReservedQuantity()).subtract(item.getQuantity()),
                     "领料", issueNo, operatorId, operatorName, "工单领料出库");
+
+            // 6. 🔑 同事务写 outbox：把"某工单领了某批次料"记下来。
+            //    不在领料里直接 HTTP 调质量服务 —— 否则对方超时/宕机就是
+            //    "料发了本子没写"，追溯链永久断裂。写到库里，事后异步投递建边，
+            //    领料与"记下来"变成最终一致，进程崩溃重启也能补发。
+            //    target 此刻为空是设计（产品批次要等完工才生成），不是漏写。
+            issueRelationPublisher.enqueue(orderId, orderNo, issueNo,
+                    item.getMaterialId(), r.getMaterialCode(), item.getBatchNo(), item.getQuantity());
         }
     }
 
@@ -369,6 +383,7 @@ public class InventoryService {
     public InventoryVO inbound(Long materialId, BigDecimal quantity, String batchNo,
                                Long warehouseId, Long operatorId, String operatorName,
                                String remark) {
+        RoleGuard.require("物料入库只允许仓库管理员执行", RoleGuard.WAREHOUSE);
         Long wid = wid(warehouseId);
         MaterialInventory before = inventoryMapper.selectOne(materialId, wid);
         if (before == null) {

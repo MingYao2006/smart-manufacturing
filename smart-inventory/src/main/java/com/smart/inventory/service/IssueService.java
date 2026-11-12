@@ -1,5 +1,6 @@
 package com.smart.inventory.service;
 
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.context.UserContextHolder;
 import com.smart.common.exception.BusinessException;
 import com.smart.common.result.ErrorCode;
@@ -55,6 +56,7 @@ public class IssueService {
      */
     @Transactional(rollbackFor = Exception.class)
     public IssueResultVO issue(IssueRequest req) {
+        RoleGuard.require("领料只允许仓库管理员执行", RoleGuard.WAREHOUSE);
         String issueNo = req.getIssueNo();
         if (issueNo == null || issueNo.isBlank()) {
             issueNo = BizNoGenerator.generateWithNano(BizNoGenerator.ISSUE_PREFIX);
@@ -127,6 +129,7 @@ public class IssueService {
      */
     @Transactional(rollbackFor = Exception.class)
     public IssueResultVO returnMaterial(ReturnRequest req) {
+        RoleGuard.require("退料只允许仓库管理员执行", RoleGuard.WAREHOUSE);
         String returnNo = req.getReturnNo();
         if (returnNo == null || returnNo.isBlank()) {
             returnNo = BizNoGenerator.generateWithNano("RT");

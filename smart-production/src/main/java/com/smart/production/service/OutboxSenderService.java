@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 本地消息表投递服务（第 5 周任务 5.6 —— 消息可靠性，面试必问）。
+ * 本地消息表投递服务（第 5 周任务 5.6 —— 消息可靠性）。
  *
  * <h3>为什么需要 outbox</h3>
  * 直接 {@code rabbitTemplate.send()} 的问题：
@@ -117,16 +117,25 @@ public class OutboxSenderService implements MessagePublisher {
 
     /**
      * 投递单条消息并等待 confirm。
+     *
+     * <p>🔑 必须写 {@code __TypeId__} 头：outbox 里存的是已序列化的 JSON 字符串，
+     * 这里不能再用 {@code convertAndSend}（那会对字符串二次序列化）。
+     * 但手动构造消息会丢掉类型信息，消费端只能反序列化成 {@code Map}，
+     * 导致 {@code @RabbitListener} 方法参数绑定失败并被当致命错误丢弃消息。
+     * 所以这里按 routingKey 显式补上接收端的事件类型。
      */
     private void sendOne(MqOutbox msg) {
         try {
-            Message message = MessageBuilder
-                    .withBody(msg.getPayload().getBytes(StandardCharsets.UTF_8))
-                    .setContentType(MessageProperties.CONTENT_TYPE_JSON)
-                    .setMessageId(msg.getBizKey())
-                    .setHeader("outboxId", msg.getId())
-                    .setHeader("bizKey", msg.getBizKey())
-                    .build();
+            MessageProperties props = new MessageProperties();
+            props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+            props.setMessageId(msg.getBizKey());
+            props.setHeader("outboxId", msg.getId());
+            props.setHeader("bizKey", msg.getBizKey());
+            String typeId = typeIdOf(msg.getRoutingKey());
+            if (typeId != null) {
+                props.setHeader("__TypeId__", typeId);
+            }
+            Message message = new Message(msg.getPayload().getBytes(StandardCharsets.UTF_8), props);
 
             CorrelationData correlation = new CorrelationData(String.valueOf(msg.getId()));
             rabbitTemplate.send(msg.getExchangeName(), msg.getRoutingKey(), message, correlation);
@@ -153,6 +162,32 @@ public class OutboxSenderService implements MessagePublisher {
             } catch (Exception ex) {
                 log.error("[outbox 标记重试失败] id={}", msg.getId(), ex);
             }
+        }
+    }
+
+    /**
+     * Returns 回调：消息进了交换机但<b>没有队列接收</b>，被 Broker 退回。
+     *
+     * <p>这是最容易漏的一环 —— 这种情况 confirm 依然是 ack（Broker 确实收到了），
+     * 若不处理退回，outbox 会被标记"已投递"，消息从此静默丢失。
+     * 这里按 outboxId 找到记录，重置回待投递并记下原因。
+     */
+    public void onReturned(org.springframework.amqp.core.ReturnedMessage returned) {
+        try {
+            Object rawId = returned.getMessage().getMessageProperties().getHeader("outboxId");
+            String reason = String.format("returned: replyCode=%d replyText=%s exchange=%s routingKey=%s",
+                    returned.getReplyCode(), returned.getReplyText(),
+                    returned.getExchange(), returned.getRoutingKey());
+            if (rawId instanceof Number n) {
+                outboxMapper.markReturned(n.longValue(), reason);
+                log.warn("[outbox 路由退回] id={} {}（已重置为待投递）", n.longValue(), reason);
+            } else {
+                // 拿不到 outboxId（非 outbox 发出的消息）：至少告警，不能静默
+                log.error("[outbox 路由退回] 缺少 outboxId，无法回写重试 {} msgId={}",
+                        reason, returned.getMessage().getMessageProperties().getMessageId());
+            }
+        } catch (Exception e) {
+            log.error("[outbox 路由退回处理失败]", e);
         }
     }
 
@@ -207,6 +242,19 @@ public class OutboxSenderService implements MessagePublisher {
     public void sendDirect(MqConstants.ReportCompletedEvent event) {
         rabbitTemplate.convertAndSend(MqConstants.EXCHANGE, MqConstants.RK_REPORT_COMPLETED, event);
         log.info("[直接投递] msgId={} orderId={}", event.getMessageId(), event.getOrderId());
+    }
+
+    /**
+     * routingKey → 消费端事件类全名。
+     *
+     * <p>只用于让消费端知道该反序列化成什么类型；未登记的路由键返回 null（不写头，
+     * 由转换器按默认规则处理）。
+     */
+    private static String typeIdOf(String routingKey) {
+        if (MqConstants.RK_REPORT_COMPLETED.equals(routingKey)) {
+            return MqConstants.ReportCompletedEvent.class.getName();
+        }
+        return null;
     }
 
     private String truncate(String s) {

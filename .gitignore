@@ -33,3 +33,25 @@ dist/
 
 # CSS 清理前的本地备份（确认外观无误后可删除）
 smart-gateway/src/main/resources/static/.styles.backup-*.css
+
+# ---- 部署包 / 上传分片（体积大，GitHub 单文件限制 100MB，绝不提交）----
+*.zip
+!deploy/smartmes-static-demo.zip
+smartmes-deploy.zip
+upload-split/
+smartmes-static-demo.zip.bak
+
+# ---- 凭据文件（密码 / JWT / frp token，绝不提交；示例文件保留）----
+deploy/.env
+deploy/frp/*.toml
+deploy/frp/*.ini
+!deploy/frp/*.example.toml
+!deploy/frp/*.example.ini
+
+# ---- 本地验证脚本 / 临时产物 ----
+prototypes/.verify-*
+prototypes/.cdp-*
+prototypes/.launch-*
+prototypes/*.log
+prototypes/*.err
+prototypes/preview-*.png

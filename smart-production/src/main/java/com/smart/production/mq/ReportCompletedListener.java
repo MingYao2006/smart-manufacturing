@@ -1,13 +1,13 @@
 package com.smart.production.mq;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smart.production.service.ProductionOrderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
+import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
-
-import java.util.Map;
 
 /**
  * 报工完成事件消费者（第 5 周任务 5.5 / 5.6）。
@@ -24,6 +24,18 @@ import java.util.Map;
  *   <li>数据自愈：即使丢了消息，定时兜底扫描也能把进度算对</li>
  * </ul>
  *
+ * <h3>为什么方法参数是 {@link Message} 而不是事件对象</h3>
+ * 这是真机联调踩出来的坑（见 docs/06 §5.6）。outbox 投递的是<b>已序列化的 JSON 字符串</b>，
+ * 走 Spring 的自动转换会依次踩到三个坑：
+ * <ol>
+ *   <li>消息没写 {@code __TypeId__} → 反序列化成 {@code LinkedHashMap} → 参数绑定失败</li>
+ *   <li>补了 {@code __TypeId__} → Jackson 类型映射器默认只信任 {@code java.util/java.lang} → 抛信任包异常</li>
+ *   <li>放行信任包 → 第二个参数 {@code Map<String,Object> headers} 又和消息体类型不匹配</li>
+ * </ol>
+ * 三处都只在真实 broker 上才会暴露，单测和纸面设计永远发现不了。
+ * 改成直接拿原始 {@link Message}、自己用 {@link ObjectMapper} 反序列化后，
+ * 类型与头部都不再依赖框架的隐式约定，链路稳定。
+ *
  * <h3>失败处理</h3>
  * 抛异常 → Spring AMQP 自动重试（max-attempts=3）→ 耗尽后进死信队列（DLQ）。
  * 不吞异常：吞掉就永远没人知道失败了。
@@ -36,10 +48,20 @@ import java.util.Map;
 public class ReportCompletedListener {
 
     private final ProductionOrderService orderService;
+    private final ObjectMapper objectMapper;
 
     @RabbitListener(queues = MqConstants.QUEUE_REPORT_COMPLETED, containerFactory = "manualAckContainerFactory")
-    public void onReportCompleted(MqConstants.ReportCompletedEvent event, Map<String, Object> headers) {
-        String traceId = headers == null ? null : String.valueOf(headers.get("traceId"));
+    public void onReportCompleted(Message message) {
+        MqConstants.ReportCompletedEvent event;
+        try {
+            event = objectMapper.readValue(message.getBody(), MqConstants.ReportCompletedEvent.class);
+        } catch (Exception e) {
+            // 反序列化失败 = 消息格式有问题，重试也没用，抛出去让它进死信队列（可观测）
+            throw new IllegalStateException("报工完成事件反序列化失败: " + e.getMessage(), e);
+        }
+
+        Object rawTrace = message.getMessageProperties().getHeaders().get("traceId");
+        String traceId = rawTrace == null ? null : String.valueOf(rawTrace);
         String oldTrace = MDC.get("traceId");
         if (traceId != null && !"null".equals(traceId)) {
             MDC.put("traceId", traceId);

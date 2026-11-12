@@ -324,7 +324,8 @@ class TraceServiceTest {
         List<BatchRelation> inserted = new ArrayList<>();
         Recorder<BatchRelationMapper> rm = Recorder.of(BatchRelationMapper.class,
                 Stub.rule("selectAllActive", 0, inv -> new ArrayList<>()),
-                Stub.rule("insert", 1, inv -> {
+                Stub.rule("selectByBizKey", 3, inv -> null),
+                Stub.rule("insertIgnore", 1, inv -> {
                     inserted.add((BatchRelation) inv.arg0());
                     return 1;
                 }));

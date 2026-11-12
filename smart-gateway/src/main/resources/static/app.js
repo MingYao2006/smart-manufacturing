@@ -138,6 +138,199 @@
     reject: { label: '退回返工', variant: 'danger', target: 2 }
   };
 
+  /* ==========================================================
+     角色权限表
+     与后端两处校验同一口径：
+       · smart-common RoleGuard（各服务方法内的细粒度校验 + 归属校验）
+       · smart-gateway RoleAuthorizationFilter（方法 + 路径的接口级拦截）
+     前端这一层只负责「看不到入口」，真正挡越权的是服务端。
+     ========================================================== */
+  const ROLE_NAMES = {
+    ADMIN: '系统管理员',
+    PLANNER: '生产计划员',
+    WAREHOUSE: '仓库管理员',
+    OPERATOR: '车间操作工',
+    INSPECTOR: '质检员'
+  };
+
+  // null 表示该角色拥有全部权限（只有 ADMIN）
+  const ROLE_PERMISSIONS = {
+    ADMIN: null,
+    PLANNER: ['order.create', 'order.plan', 'order.execute', 'task.dispatch', 'inv.reserve', 'user.list'],
+    WAREHOUSE: ['inv.reserve', 'inv.issue', 'inv.reconcile', 'inv.inbound'],
+    OPERATOR: ['order.execute', 'task.execute', 'report.create'],
+    INSPECTOR: ['task.inspect', 'inspection.create']
+  };
+
+  // 侧栏模块可见性：登录后的第一屏就是该角色的工作面
+  const ROLE_VIEWS = {
+    ADMIN: null,
+    PLANNER: ['today', 'orders', 'tasks', 'materials', 'basic', 'trace'],
+    WAREHOUSE: ['today', 'orders', 'materials', 'basic'],
+    OPERATOR: ['today', 'tasks', 'orders'],
+    INSPECTOR: ['today', 'tasks', 'quality', 'trace']
+  };
+
+  const ORDER_TARGET_PERMISSION = {
+    APPROVED: 'order.plan',
+    RELEASED: 'order.plan',
+    CANCELLED: 'order.plan',
+    CLOSED: 'order.plan',
+    IN_PROGRESS: 'order.execute',
+    PAUSED: 'order.execute',
+    COMPLETED: 'order.execute'
+  };
+
+  const TASK_ACTION_PERMISSION = {
+    start: 'task.execute',
+    pause: 'task.execute',
+    resume: 'task.execute',
+    complete: 'task.execute',
+    pass: 'task.inspect',
+    reject: 'task.inspect',
+    report: 'report.create'
+  };
+
+  // data-action → 所需权限，点击时统一校验（防止用旧页面/直接调接口以外的误触）
+  const ACTION_PERMISSION = {
+    'create-order': 'order.create',
+    'release-order': 'order.plan',
+    'create-report': 'report.create',
+    'report-task': 'report.create',
+    'start-task': 'task.execute',
+    'pause-task': 'task.execute',
+    'resume-task': 'task.execute',
+    'complete-task': 'task.execute',
+    'pass-task': 'task.inspect',
+    'reject-task': 'task.inspect',
+    'inv-reserve': 'inv.reserve',
+    'inv-release': 'inv.reserve',
+    'inv-issue-open': 'inv.issue',
+    'inv-return-open': 'inv.issue',
+    'inv-reconcile': 'inv.reconcile',
+    'create-product': 'basic.write',
+    'edit-product': 'basic.write',
+    'delete-product': 'basic.write',
+    'create-material': 'basic.write',
+    'edit-material': 'basic.write',
+    'delete-material': 'basic.write',
+    'create-bom': 'basic.write',
+    'create-route': 'basic.write',
+    'basic-activate': 'basic.write',
+    'basic-delete': 'basic.write'
+  };
+
+  function currentRoles() {
+    return Array.isArray(state.user?.roles) ? state.user.roles : [];
+  }
+
+  function hasRole(role) {
+    return currentRoles().includes(role);
+  }
+
+  function roleLabel() {
+    const roles = currentRoles();
+    if (!roles.length) return '未登录';
+    return roles.map((role) => ROLE_NAMES[role] || role).join(' / ');
+  }
+
+  /**
+   * 权限判定。
+   *
+   * 演示模式（未连网关）不做角色收口：它本来就是"全景演示"，
+   * 数据只改浏览器内存（顶部演示提示条已写明），按角色隐藏会让演示看不全。
+   */
+  function can(permission) {
+    if (state.mode !== 'live') return true;
+    return currentRoles().some((role) => ROLE_PERMISSIONS[role] === null
+      || (ROLE_PERMISSIONS[role] || []).includes(permission));
+  }
+
+  function canView(view) {
+    if (state.mode !== 'live') return true;
+    return currentRoles().some((role) => ROLE_VIEWS[role] === null
+      || (ROLE_VIEWS[role] || []).includes(view));
+  }
+
+  function firstAllowedView() {
+    const views = ['today', 'orders', 'tasks', 'materials', 'basic', 'quality', 'trace'];
+    return views.find(canView) || 'today';
+  }
+
+  // 是否属于"只在车间动自己的工序"的角色：操作工（计划员/管理员可以处理别人的工序）
+  function isShopFloorOnly() {
+    return state.mode === 'live' && hasRole('OPERATOR') && !can('task.dispatch');
+  }
+
+  // 与后端 WorkTaskService#requireExecutor 的归属校验同口径
+  function isMyTask(task) {
+    if (!isShopFloorOnly()) return true;
+    const me = Number(state.user?.id);
+    return Number.isFinite(me) && Number(task?.operatorId) === me;
+  }
+
+  // 给用户看的权限说明（登录弹窗里解释"为什么看不到某个按钮"）
+  const PERMISSION_LABELS = {
+    'order.create': '新建工单',
+    'order.plan': '审核 / 下达 / 取消 / 关闭工单',
+    'order.execute': '工单开工 / 暂停 / 完工',
+    'task.dispatch': '派工',
+    'task.execute': '工序执行（仅本人工序）',
+    'task.inspect': '质检放行 / 退回',
+    'report.create': '提交报工（仅本人工序）',
+    'inv.reserve': '物料预留 / 释放',
+    'inv.issue': '领料 / 退料',
+    'inv.reconcile': '库存对账',
+    'inv.inbound': '物料入库',
+    'inspection.create': '质检单录入',
+    'basic.write': '基础资料维护'
+  };
+
+  const VIEW_LABELS = {
+    today: '生产运营',
+    orders: '生产工单',
+    tasks: '工序任务',
+    materials: '库存与物料',
+    basic: '产品与工艺',
+    quality: '质检任务',
+    trace: '批次追溯'
+  };
+
+  function grantedPermissions() {
+    const roles = currentRoles();
+    const all = Object.keys(PERMISSION_LABELS);
+    if (roles.some((role) => ROLE_PERMISSIONS[role] === null)) return all;
+    const granted = new Set();
+    roles.forEach((role) => (ROLE_PERMISSIONS[role] || [])
+      .forEach((permission) => { if (PERMISSION_LABELS[permission]) granted.add(permission); }));
+    return all.filter((permission) => granted.has(permission));
+  }
+
+  function permissionSummary() {
+    if (state.mode !== 'live') {
+      return '演示模式不按角色收口，全部模块与操作可见；数据只改浏览器内存，不会落库。';
+    }
+    const views = Object.keys(VIEW_LABELS).filter(canView).map((view) => VIEW_LABELS[view]);
+    const actions = grantedPermissions().map((permission) => PERMISSION_LABELS[permission]);
+    return `可见模块：${views.join(' / ') || '无'}。可执行：${actions.join('、') || '仅查询'}。`;
+  }
+
+  function permissionHint(permission) {
+    return {
+      'order.create': '只有生产计划员可以新建工单',
+      'order.plan': '只有生产计划员可以审核 / 下达 / 取消 / 关闭工单',
+      'order.execute': '只有生产计划员或车间操作工可以开工 / 暂停 / 完工',
+      'task.dispatch': '只有生产计划员可以派工',
+      'task.execute': '只有车间操作工可以执行工序',
+      'task.inspect': '只有质检员可以放行或退回',
+      'report.create': '只有车间操作工可以报工',
+      'inv.reserve': '只有生产计划员或仓库管理员可以预留 / 释放物料',
+      'inv.issue': '只有仓库管理员可以领料 / 退料',
+      'inv.reconcile': '只有仓库管理员可以对账',
+      'basic.write': '基础资料的增删改只允许系统管理员维护'
+    }[permission] || '当前角色没有该操作的权限';
+  }
+
   const iconPaths = {
     plus: 'i-plus',
     search: 'i-search',
@@ -248,7 +441,7 @@
   }
 
   function currentTaskFor(orderId) {
-    const tasks = tasksFor(orderId);
+    const tasks = isShopFloorOnly() ? tasksFor(orderId).filter(isMyTask) : tasksFor(orderId);
     if (!tasks.length) return null;
     return tasks.find((task) => task.status === 2)
       || tasks.find((task) => task.status === 6)
@@ -257,9 +450,16 @@
       || tasks[tasks.length - 1];
   }
 
+  // 首页随工单可切换的工单：只列未关闭 / 未取消的在制工单，排除仅用于趋势统计的历史归档单。
+  // 顺序与「工单队列」一致，保证滑移方向与用户直觉相符。
+  function switchableOrders() {
+    return state.orders.filter((order) => !order.archived && order.status !== 7 && order.status !== 8);
+  }
+
   function activeOrder() {
-    return state.orders.find((order) => order.id === state.currentOrderId)
-      || state.orders.find((order) => order.status === 4)
+    const switchable = switchableOrders();
+    return switchable.find((order) => order.id === state.currentOrderId)
+      || switchable[0]
       || state.orders[0];
   }
 
@@ -299,14 +499,27 @@
   function updateNavigation(route) {
     const active = route.view === 'orders' && route.id ? 'orders' : route.view;
     document.querySelectorAll('[data-nav]').forEach((link) => {
-      const isActive = link.dataset.nav === active;
+      const permitted = canView(link.dataset.nav);
+      link.hidden = !permitted;
+      const isActive = permitted && link.dataset.nav === active;
       link.classList.toggle('is-active', isActive);
       if (isActive) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
+    // 分组标题下如果全部模块都不可见，标题也一起隐藏，避免侧栏出现空分组
+    document.querySelectorAll('.rail-nav .rail-group').forEach((group) => {
+      let node = group.nextElementSibling;
+      let hasVisibleLink = false;
+      while (node && !node.classList.contains('rail-group')) {
+        if (node.dataset.nav && !node.hidden) hasVisibleLink = true;
+        node = node.nextElementSibling;
+      }
+      group.hidden = !hasVisibleLink;
+    });
     const moreButton = document.getElementById('mobile-more-button');
     if (moreButton) {
       const moreActive = active === 'basic' || active === 'trace' || active === 'quality';
+      moreButton.hidden = !['basic', 'trace', 'quality'].some(canView);
       moreButton.classList.toggle('is-active', moreActive);
       moreButton.setAttribute('aria-label', moreActive ? '更多，当前页面在此菜单中' : '更多模块');
     }
@@ -327,13 +540,13 @@
 
   function updateUser() {
     const name = state.user?.realName || state.user?.username || '张计划';
-    const roles = state.user?.roles || ['PLANNER'];
-    const roleText = roles.includes('ADMIN') ? '系统管理员' : roles.includes('PLANNER') ? '生产计划员' : '车间用户';
     const accountName = document.getElementById('account-name');
     const accountRole = document.getElementById('account-role');
     const avatar = document.querySelector('.account-avatar');
     accountName.textContent = name;
-    accountRole.textContent = roleText;
+    accountRole.textContent = state.mode === 'live'
+      ? roleLabel()
+      : `${roleLabel()} · 演示全景`;
     avatar.textContent = name.slice(0, 1);
   }
 
@@ -471,6 +684,20 @@
 
   function render() {
     const route = parseRoute();
+    // 首页随工单只展示「在制工单」：详情路由可能把 currentOrderId 指向已关闭 / 归档单，
+    // 这里规整一次，保证 Tab 选中态、队列高亮与卡片内容三者始终一致。
+    if (route.view === 'today') {
+      const active = activeOrder();
+      if (active) state.currentOrderId = active.id;
+    }
+    // 角色无权访问的模块直接跳回自己的第一个可见模块
+    if (!canView(route.view)) {
+      const fallback = firstAllowedView();
+      if (fallback !== route.view) {
+        window.location.hash = `#/${fallback}`;
+        return;
+      }
+    }
     state.route = route;
     updateNavigation(route);
     updateConnection();
@@ -629,6 +856,14 @@
   // 按 WorkTaskStatus 迁移表推导可执行的工序动作，而不是写死状态分支。
   // 这样后端迁移表变化时，前端只需同步 TASK_TRANSITIONS 一处。
   function taskActionList(task) {
+    // 角色收口：没有该动作权限的角色连按钮都不出现（与后端 RoleGuard 同口径）
+    const permitted = stateTaskActions(task).filter((token) => can(TASK_ACTION_PERMISSION[token]));
+    // 归属收口：操作工只看/只动派给自己的工序，别人的工序不给动作入口
+    return isMyTask(task) ? permitted : [];
+  }
+
+  // 只按状态推导动作，不做角色/归属收口；用于解释「为什么这个工序没有按钮」
+  function stateTaskActions(task) {
     const status = Number(task?.status);
     const allowed = TASK_TRANSITIONS[status] || [];
     const actions = [];
@@ -649,6 +884,15 @@
     return actions;
   }
 
+  // 空按钮有三种原因，文案要说清是哪一种：工序已终态 / 角色无权 / 没派给本人
+  function taskActionHint(task) {
+    if (isShopFloorOnly() && !isMyTask(task)) {
+      return '这道工序没有派给你，请先由计划员派工。';
+    }
+    if (!stateTaskActions(task).length) return '该工序已完成，没有可执行的状态操作。';
+    return '按当前角色（' + roleLabel() + '），这道工序没有你能执行的操作。';
+  }
+
   function taskButtons(task, theme = 'dark') {
     if (!task) return '';
     const buttonClass = theme === 'dark' ? 'button ghost-light small' : 'button small';
@@ -656,7 +900,7 @@
     const tokens = taskActionList(task);
 
     // 报工是产出数据的动作而非状态迁移，但服务端同样只允许 IN_PROGRESS(2) 报工
-    if (status === 2) {
+    if (status === 2 && can('report.create') && isMyTask(task)) {
       const completeIndex = tokens.indexOf('complete');
       if (completeIndex >= 0) tokens.splice(completeIndex, 0, 'report');
       else tokens.push('report');
@@ -683,8 +927,42 @@
     return [4, 5].includes(ordered[index - 1].status);
   }
 
+  // 顶部工单 Tab 芯片：一眼看全所有在制工单，点击就地切换随工单。
+  function renderTravelerTabs() {
+    const orders = switchableOrders();
+    if (orders.length < 2) return '';
+    const active = activeOrder();
+    return `
+      <div class="traveler-tabs" id="traveler-tabs" role="tablist" aria-label="切换在制工单">
+        <span class="traveler-tabs-label">在制工单</span>
+        ${orders.map((order) => {
+          const tone = order.status === 5 ? ' is-paused' : (isOrderRisk(order) ? ' is-risk' : '');
+          const selected = order.id === active.id;
+          return `<button class="wo-tab${tone}" type="button" role="tab"
+            data-action="switch-order" data-order="${order.id}"
+            aria-selected="${selected}" tabindex="${selected ? '0' : '-1'}"
+            aria-label="查看随工单 ${escapeHtml(order.orderNo)}，${escapeHtml(order.productName)}">
+            <span class="wo-dot" aria-hidden="true"></span>${escapeHtml(order.orderNo)}</button>`;
+        }).join('')}
+        <span class="traveler-tabs-count">${orders.length} 张在制</span>
+      </div>`;
+  }
+
   function renderTraveler(order) {
     if (!order) return '<div class="empty-state">暂无生产工单</div>';
+    return `
+      <section class="traveler" id="traveler-card" aria-labelledby="traveler-product-name">
+        ${renderTravelerTabs()}
+        <p class="sr-only traveler-switch-live" aria-live="polite"></p>
+        <div class="traveler-stage" id="traveler-stage">
+          ${renderTravelerSlide(order)}
+        </div>
+      </section>`;
+  }
+
+  // 内容层：抽出来供局部切换复用。外壳（渐变、网格底纹、顶部 3px 线）保持静止，
+  // 只有这一层在切换时滑移，观感是「同一张卡片上传送带送来下一版工单内容」。
+  function renderTravelerSlide(order) {
     const tasks = tasksFor(order.id);
     const current = currentTaskFor(order.id);
     const due = relativeMinutes(order.planEndTime);
@@ -697,7 +975,7 @@
       : '';
 
     return `
-      <section class="traveler" aria-labelledby="traveler-product-name">
+      <div class="traveler-slide" data-order="${order.id}">
         <div class="traveler-head">
           <div class="traveler-id">
             <span>当前随工单 <em class="run-label">RUN CARD</em></span>
@@ -734,8 +1012,155 @@
             ${taskButtons(current, 'dark')}
           </div>
         </div>
-      </section>
+      </div>
     `;
+  }
+
+  /* ---------- 随工单切换动效：传送带滑移 ----------
+     只替换卡片内容层，不重建整页（render() 是 app.innerHTML 全量重建，
+     这里做局部 DOM 交换才能保留动效与焦点）。
+     · 数据状态在点击瞬间写入，动画只负责入场，不依赖 animationend 更新数据
+     · 切换前 cancel 掉所有在途动画，快速连点不会留下「画面 A / 数据 B」的错态
+     · 仅动 transform / opacity，命中 prefers-reduced-motion 时瞬时替换 */
+  const travelerAnims = [];
+
+  function trackTravelerAnim(animation) {
+    travelerAnims.push(animation);
+    const drop = () => {
+      const i = travelerAnims.indexOf(animation);
+      if (i >= 0) travelerAnims.splice(i, 1);
+    };
+    animation.finished.then(drop, drop);
+    return animation;
+  }
+
+  function cancelTravelerAnims(stage) {
+    travelerAnims.slice().forEach((animation) => {
+      try { animation.cancel(); } catch (error) { /* 已结束 */ }
+    });
+    travelerAnims.length = 0;
+    // 清掉上一轮切换遗留的退出层，避免残影
+    stage.querySelectorAll('.traveler-slide.is-exiting').forEach((element) => element.remove());
+    const current = stage.querySelector('.traveler-slide');
+    if (current) {
+      current.classList.remove('is-entering');
+      current.style.opacity = '';
+      current.style.transform = '';
+    }
+  }
+
+  function decorateTravelerSlide(slide) {
+    const zone = slide.querySelector('.route-zone');
+    const line = slide.querySelector('.route-progress');
+    if (zone && line) {
+      const target = getComputedStyle(zone).getPropertyValue('--route-progress').trim() || '0';
+      line.style.transform = `scaleX(${target})`;      // 最终态先固定，动画只做表现
+      trackTravelerAnim(line.animate(
+        [{ transform: 'scaleX(0)' }, { transform: `scaleX(${target})` }],
+        { duration: 520, delay: 60, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'both' }
+      ));
+    }
+    slide.querySelectorAll('.route-station').forEach((station, index) => {
+      trackTravelerAnim(station.animate(
+        [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }],
+        { duration: 300, delay: 80 + index * 30, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'both' }
+      ));
+    });
+  }
+
+  function switchTravelerOrder(orderId, focusTab) {
+    const card = document.getElementById('traveler-card');
+    const stage = document.getElementById('traveler-stage');
+    if (!card || !stage) { render(); return; }
+
+    const orders = switchableOrders();
+    const order = orders.find((item) => String(item.id) === String(orderId));
+    if (!order) return;
+
+    const outgoing = stage.querySelector('.traveler-slide');
+    // 方向：按列表顺序判断前后，往后切换向左滑出 / 从右滑入，往前反向
+    const oldIndex = outgoing ? orders.findIndex((item) => String(item.id) === String(outgoing.dataset.order)) : -1;
+    const newIndex = orders.indexOf(order);
+    const dir = newIndex >= oldIndex ? 1 : -1;
+
+    cancelTravelerAnims(stage);
+    state.currentOrderId = order.id;             // 数据状态立即写入
+
+    // 同步 Tab 选中态与队列高亮（不重建整页，焦点保持在触发元素上）
+    card.querySelectorAll('.wo-tab').forEach((tab) => {
+      const selected = String(tab.dataset.order) === String(order.id);
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll('.order-queue-card .order-row').forEach((row) => {
+      row.classList.toggle('is-current', String(row.dataset.order) === String(order.id));
+    });
+    const live = card.querySelector('.traveler-switch-live');
+    if (live) {
+      const current = currentTaskFor(order.id);
+      live.textContent = `当前随工单 ${order.orderNo}，${order.productName}，当前工序 ${current ? current.stepName : '尚未生成工序'}。`;
+    }
+    if (focusTab) {
+      const tab = card.querySelector(`.wo-tab[data-order="${order.id}"]`);
+      if (tab) tab.focus({ preventScroll: true });
+    }
+
+    // 用模板字符串解析出内容层，先绝对定位测量高度，避免与退出层并排把舞台撑高
+    const holder = document.createElement('div');
+    holder.innerHTML = renderTravelerSlide(order);
+    const incoming = holder.firstElementChild;
+    incoming.classList.add('is-entering');
+    incoming.style.position = 'absolute';
+    incoming.style.inset = '0';
+    stage.appendChild(incoming);
+    const newHeight = incoming.getBoundingClientRect().height;
+    incoming.style.position = '';
+    incoming.style.inset = '';
+
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced) {
+      if (outgoing) outgoing.remove();
+      incoming.classList.remove('is-entering');
+      updateRunningTimers();
+      return;
+    }
+
+    if (outgoing) {
+      const oldHeight = outgoing.getBoundingClientRect().height;
+      outgoing.classList.add('is-exiting');
+      outgoing.style.position = 'absolute';
+      outgoing.style.inset = '0';
+      outgoing.style.zIndex = '1';
+      outgoing.style.pointerEvents = 'none';
+      const out = trackTravelerAnim(outgoing.animate(
+        [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `translateX(${-dir * 20}px)` }],
+        { duration: 180, easing: 'cubic-bezier(0.4, 0, 1, 1)', fill: 'forwards' }
+      ));
+      out.finished.then(() => { outgoing.remove(); }, () => {});
+
+      // 工序数量不同导致高度变化时平滑过渡，避免下方队列跳一下
+      if (Math.abs(newHeight - oldHeight) > 1) {
+        trackTravelerAnim(stage.animate(
+          [{ height: `${oldHeight}px` }, { height: `${newHeight}px` }],
+          { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' }
+        ));
+      }
+    }
+
+    const enter = trackTravelerAnim(incoming.animate(
+      [{ opacity: 0, transform: `translateX(${dir * 20}px)` }, { opacity: 1, transform: 'none' }],
+      { duration: 300, delay: 40, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'both' }
+    ));
+    enter.finished.then(() => {
+      if (stage.contains(incoming)) {
+        incoming.classList.remove('is-entering');
+        incoming.style.opacity = '';
+        incoming.style.transform = '';
+      }
+    }, () => {});
+
+    decorateTravelerSlide(incoming);
+    updateRunningTimers();
   }
 
   // 指标口径：不同计量单位不能相加（台 / 块 / 件混在一起没有业务含义），
@@ -1348,7 +1773,9 @@
     const due = relativeMinutes(order.planEndTime);
     const risk = isOrderRisk(order);
     return `
-      <a class="order-row ${risk ? 'is-risk' : ''} ${order.id === state.currentOrderId ? 'is-current' : ''}" href="${routeHref('orders', order.id)}" aria-label="查看工单 ${escapeHtml(order.orderNo)}">
+      <div class="order-row ${risk ? 'is-risk' : ''} ${order.id === state.currentOrderId ? 'is-current' : ''}"
+        data-action="switch-order" data-order="${order.id}" tabindex="0"
+        aria-label="切换随工单为 ${escapeHtml(order.orderNo)}，${escapeHtml(order.productName)}">
         <div class="order-identity">
           <div class="order-number">${escapeHtml(order.orderNo)} ${statusPill(order.status)}</div>
           <p class="order-product">${escapeHtml(order.productName)}</p>
@@ -1371,8 +1798,10 @@
           </div>
           <div class="progress-track" style="--value:${Math.max(0, Math.min(100, order.progress))}%"><span></span></div>
         </div>
-        <svg class="row-arrow" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-arrow"/></svg>
-      </a>
+        <a class="order-row-detail" href="${routeHref('orders', order.id)}" aria-label="查看工单 ${escapeHtml(order.orderNo)} 详情">
+          <span class="order-row-detail-text">详情</span><svg class="row-arrow" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-arrow"/></svg>
+        </a>
+      </div>
     `;
   }
 
@@ -1441,7 +1870,13 @@
         orderId: state.orders[0]?.id
       });
     }
-    return decisions;
+    return decisions.filter((item) => {
+      // 待办只推给能处理它的角色：计划员的下达提醒不会推给操作工
+      if (item.action === 'release-order') return can('order.plan');
+      if (item.action === 'navigate-quality') return canView('quality');
+      if (item.action === 'navigate-materials') return canView('materials');
+      return true;
+    });
   }
 
   // 待办事项卡片已按需求从工作台移除，只保留顶栏消息组件的提醒入口
@@ -1520,7 +1955,9 @@
 
   function renderToday() {
     const order = activeOrder();
-    const createButton = `<button class="button primary" type="button" data-action="create-order">${icon('plus')} 新建工单</button>`;
+    const createButton = can('order.create')
+      ? `<button class="button primary" type="button" data-action="create-order">${icon('plus')} 新建工单</button>`
+      : '';
     return `
       ${pageHead('生产运营工作台', '先看行动，再看分析。数据来自网关或演示数据集。', createButton)}
       <section class="dash-section" aria-labelledby="sec-exec">
@@ -1562,7 +1999,8 @@
   }
 
   function renderOrderQueue() {
-    const visibleOrders = state.orders.filter((item) => item.status !== 7 && item.status !== 8).slice(0, 5);
+    // 与随工单 Tab 使用同一份「在制工单」口径和顺序，保证滑移方向符合直觉
+    const visibleOrders = switchableOrders().slice(0, 5);
     return `
       <section class="dashboard-card order-queue-card" aria-labelledby="order-queue-title">
         <div class="dashboard-card-head">
@@ -1623,7 +2061,9 @@
 
   function renderOrders() {
     const orders = filteredOrders();
-    const createButton = `<button class="button primary" type="button" data-action="create-order">${icon('plus')} 新建工单</button>`;
+    const createButton = can('order.create')
+      ? `<button class="button primary" type="button" data-action="create-order">${icon('plus')} 新建工单</button>`
+      : '';
     const chips = orderChips();
 
     return `
@@ -1753,7 +2193,8 @@
   }
 
   function orderTransitionButton(order) {
-    const actions = ORDER_TRANSITIONS[order.status] || [];
+    const actions = (ORDER_TRANSITIONS[order.status] || [])
+      .filter(([target]) => can(ORDER_TARGET_PERMISSION[target]));
     return actions.map(([target, label, variant]) => `
       <button class="button ${variant}" type="button" data-action="transition-order" data-order="${order.id}" data-target="${target}">${label}</button>
     `).join('');
@@ -2005,7 +2446,7 @@
         </div>
         <div class="detail-actions">
           ${orderTransitionButton(order)}
-          <button class="button" type="button" data-action="create-report" data-task="${current?.id || ''}" ${current ? '' : 'disabled'}>提交报工</button>
+          ${can('report.create') && isMyTask(current) ? `<button class="button" type="button" data-action="create-report" data-task="${current?.id || ''}" ${current ? '' : 'disabled'}>提交报工</button>` : ''}
         </div>
       </header>
 
@@ -2081,7 +2522,10 @@
   }
 
   function allTasks() {
-    return state.orders.flatMap((order) => tasksFor(order.id).map((task) => ({ ...task, order })));
+    // 数据范围：车间操作工只列派给本人的工序
+    return state.orders
+      .flatMap((order) => tasksFor(order.id).map((task) => ({ ...task, order })))
+      .filter(isMyTask);
   }
 
   function filteredTasks() {
@@ -2210,8 +2654,8 @@
             <input type="number" min="1" placeholder="工单 ID" value="${escapeHtml(ops.orderIdInput)}" data-input="inv-order-id" aria-label="工单 ID">
           </label>
           <button class="button small" type="button" data-action="inv-query-order" ${busy ? 'disabled' : ''}>查询该工单</button>
-          <button class="button small" type="button" data-action="inv-reserve" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '按该工单 BOM 需求创建预留' : '请先填写工单 ID'}">按 BOM 需求预留</button>
-          <button class="button small danger" type="button" data-action="inv-release" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '释放该工单的全部预留' : '请先填写工单 ID'}">释放全部预留</button>
+          ${can('inv.reserve') ? `<button class="button small" type="button" data-action="inv-reserve" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '按该工单 BOM 需求创建预留' : '请先填写工单 ID'}">按 BOM 需求预留</button>
+          <button class="button small danger" type="button" data-action="inv-release" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '释放该工单的全部预留' : '请先填写工单 ID'}">释放全部预留</button>` : ''}
           ${busy ? '<span class="sync-spinner" aria-hidden="true"></span>' : ''}
         </div>
         ${body}
@@ -2269,8 +2713,8 @@
           <span class="muted">领料单号由服务端生成；批次管理物料必须填批次号</span>
         </div>
         <div class="toolbar" style="padding:0 12px 12px">
-          <button class="button small primary" type="button" data-action="inv-issue-open" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '为该工单领料' : '请先填写工单 ID'}">新建领料</button>
-          <button class="button small" type="button" data-action="inv-return-open" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '为该工单退料' : '请先填写工单 ID'}">新建退料</button>
+          ${can('inv.issue') ? `<button class="button small primary" type="button" data-action="inv-issue-open" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '为该工单领料' : '请先填写工单 ID'}">新建领料</button>
+          <button class="button small" type="button" data-action="inv-return-open" ${orderId && !busy ? '' : 'disabled'} title="${orderId ? '为该工单退料' : '请先填写工单 ID'}">新建退料</button>` : ''}
         </div>
         ${body}
       </section>`;
@@ -2294,8 +2738,8 @@
           <span class="muted">POST /inventory/reconcile</span>
         </div>
         <div class="toolbar" style="padding:0 12px 12px">
-          <button class="button small" type="button" data-action="inv-reconcile" data-fix="0" ${ops.busy === 'reconcile' ? 'disabled' : ''}>对账检查</button>
-          <button class="button small primary" type="button" data-action="inv-reconcile" data-fix="1" ${ops.busy === 'reconcile' ? 'disabled' : ''}>对账并修复</button>
+          ${can('inv.reconcile') ? `<button class="button small" type="button" data-action="inv-reconcile" data-fix="0" ${ops.busy === 'reconcile' ? 'disabled' : ''}>对账检查</button>
+          <button class="button small primary" type="button" data-action="inv-reconcile" data-fix="1" ${ops.busy === 'reconcile' ? 'disabled' : ''}>对账并修复</button>` : ''}
           ${ops.busy === 'reconcile' ? '<span class="sync-spinner" aria-hidden="true"></span>' : ''}
         </div>
         <div class="list-foot" style="border-top:0"><span>${resultHtml}</span></div>
@@ -2635,7 +3079,7 @@
           <span class="sr-only">搜索产品</span>
           <input type="search" placeholder="搜索产品编码或名称" value="${escapeHtml(basic.productQuery)}" data-input="basic-product-search">
         </label>
-        ${live ? `<button class="button primary" type="button" data-action="create-product">${icon('plus')} 新建产品</button>` : ''}
+        ${live && can('basic.write') ? `<button class="button primary" type="button" data-action="create-product">${icon('plus')} 新建产品</button>` : ''}
       </div>`;
     if (!rows.length) {
       return `${head}${emptyState('没有匹配的产品',
@@ -2651,8 +3095,8 @@
         <td>${product.status == null ? '<span class="status-pill tone-neutral">—</span>' : (Number(product.status) === 1 ? '<span class="status-pill tone-success">启用</span>' : '<span class="status-pill tone-caution">停用</span>')}</td>
         <td class="table-actions">
           <button class="button small" type="button" data-action="basic-product" data-product="${product.id}">详情</button>
-          ${live ? `<button class="button small" type="button" data-action="edit-product" data-product="${product.id}">编辑</button>` : ''}
-          ${live ? `<button class="button small danger" type="button" data-action="delete-product" data-product="${product.id}">删除</button>` : ''}
+          ${live && can('basic.write') ? `<button class="button small" type="button" data-action="edit-product" data-product="${product.id}">编辑</button>
+          <button class="button small danger" type="button" data-action="delete-product" data-product="${product.id}">删除</button>` : ''}
         </td>
       </tr>
     `).join('');
@@ -2687,7 +3131,7 @@
           <span class="sr-only">搜索物料</span>
           <input type="search" placeholder="搜索物料编码或名称" value="${escapeHtml(basic.materialQuery)}" data-input="basic-material-search">
         </label>
-        ${live ? `<button class="button primary" type="button" data-action="create-material">${icon('plus')} 新建物料</button>` : ''}
+        ${live && can('basic.write') ? `<button class="button primary" type="button" data-action="create-material">${icon('plus')} 新建物料</button>` : ''}
         <span class="section-note" style="margin:0">物料是 BOM 明细与库存的主体，编码全局唯一</span>
       </div>`;
     if (!basic.materialRows.length) {
@@ -2703,8 +3147,8 @@
         <td>${Number(material.isBatchManaged) === 1 ? '<span class="status-pill tone-active">是</span>' : '<span class="status-pill tone-neutral">否</span>'}</td>
         <td>${Number(material.status) === 1 ? '<span class="status-pill tone-success">启用</span>' : '<span class="status-pill tone-caution">停用</span>'}</td>
         <td class="table-actions">
-          <button class="button small" type="button" data-action="edit-material" data-material="${material.id}">编辑</button>
-          <button class="button small danger" type="button" data-action="delete-material" data-material="${material.id}">删除</button>
+          ${can('basic.write') ? `<button class="button small" type="button" data-action="edit-material" data-material="${material.id}">编辑</button>
+          <button class="button small danger" type="button" data-action="delete-material" data-material="${material.id}">删除</button>` : ''}
         </td>
       </tr>
     `).join('');
@@ -2790,8 +3234,8 @@
       const isDraft = Number(item.status) === 1;
       const actions = live ? `
           <button class="button small" type="button" data-action="basic-bom-detail" data-bom="${item.id}">明细</button>
-          ${isDraft ? `<button class="button small primary" type="button" data-action="basic-activate" data-kind="bom" data-id="${item.id}" data-version="${escapeHtml(item.bomVersion)}">生效</button>` : ''}
-          ${isDraft ? `<button class="button small danger" type="button" data-action="basic-delete" data-kind="bom" data-id="${item.id}" data-version="${escapeHtml(item.bomVersion)}">删除</button>` : ''}` : '';
+          ${isDraft && can('basic.write') ? `<button class="button small primary" type="button" data-action="basic-activate" data-kind="bom" data-id="${item.id}" data-version="${escapeHtml(item.bomVersion)}">生效</button>` : ''}
+          ${isDraft && can('basic.write') ? `<button class="button small danger" type="button" data-action="basic-delete" data-kind="bom" data-id="${item.id}" data-version="${escapeHtml(item.bomVersion)}">删除</button>` : ''}` : '';
       return `
       <tr>
         <td><strong>${escapeHtml(item.bomVersion)}</strong></td>
@@ -2851,7 +3295,7 @@
     return `
       ${selector}
       <div class="toolbar">
-        ${live ? `<button class="button primary" type="button" data-action="create-bom">${icon('plus')} 新建 BOM 草稿</button>` : ''}
+        ${live && can('basic.write') ? `<button class="button primary" type="button" data-action="create-bom">${icon('plus')} 新建 BOM 草稿</button>` : ''}
         <button class="button small" type="button" data-action="basic-load-tree">展开多层 BOM 树</button>
         ${bom ? `<button class="button small" type="button" data-action="basic-load-items" data-bom="${bom.id}">查看需求素材</button>` : ''}
         <span class="section-note" style="margin:0">草稿生效后才参与工单需求计算；生效会自动把同产品其他生效版本置为失效</span>
@@ -2938,8 +3382,8 @@
       const isDraft = Number(item.status) === 1;
       const actions = `
           <button class="button small" type="button" data-action="basic-route-detail" data-route="${item.id}">工序</button>
-          ${isDraft ? `<button class="button small primary" type="button" data-action="basic-activate" data-kind="route" data-id="${item.id}" data-version="${escapeHtml(item.routeVersion)}">生效</button>` : ''}
-          ${isDraft ? `<button class="button small danger" type="button" data-action="basic-delete" data-kind="route" data-id="${item.id}" data-version="${escapeHtml(item.routeVersion)}">删除</button>` : ''}`;
+          ${isDraft && can('basic.write') ? `<button class="button small primary" type="button" data-action="basic-activate" data-kind="route" data-id="${item.id}" data-version="${escapeHtml(item.routeVersion)}">生效</button>` : ''}
+          ${isDraft && can('basic.write') ? `<button class="button small danger" type="button" data-action="basic-delete" data-kind="route" data-id="${item.id}" data-version="${escapeHtml(item.routeVersion)}">删除</button>` : ''}`;
       return `
       <tr>
         <td><strong>${escapeHtml(item.routeVersion)}</strong></td>
@@ -2967,7 +3411,7 @@
     return `
       ${selector}
       <div class="toolbar">
-        <button class="button primary" type="button" data-action="create-route">${icon('plus')} 新建工艺路线草稿</button>
+        ${can('basic.write') ? `<button class="button primary" type="button" data-action="create-route">${icon('plus')} 新建工艺路线草稿</button>` : ''}
         ${route ? `<button class="button small" type="button" data-action="basic-load-steps" data-route="${route.id}">刷新工序</button>` : ''}
         <span class="section-note" style="margin:0">质检点为强制门禁：工序报满后须质检合格才可流转下一道</span>
       </div>
@@ -4367,7 +4811,7 @@
       <div class="drawer-block">
         <h3>当前可执行操作</h3>
         <div style="display:flex;flex-wrap:wrap;gap:7px">
-          ${taskButtons(task, 'light') || '<span class="muted" style="font-size:12px">该工序已完成，没有可执行的状态操作。</span>'}
+          ${taskButtons(task, 'light') || `<span class="muted" style="font-size:12px">${escapeHtml(taskActionHint(task))}</span>`}
           ${order ? `<a class="button small" href="${routeHref('orders', order.id)}" data-action="close-drawer">查看所属工单</a>` : ''}
         </div>
         <div class="drawer-callout">状态流转由服务端状态机校验。重复点击或并发操作只允许一个请求成功，失败时会返回冲突提示。</div>
@@ -4376,7 +4820,10 @@
     `;
     state.drawerTaskId = task.id;
     openDrawer(task.orderNo || '工序任务', task.stepName, body);
-    if (state.mode === 'live' && !state.usersState.loaded && !state.usersState.loading) {
+    // 只有看得到派工入口的角色才拉操作工名单：该接口在网关侧只授权给计划员，
+    // 其他角色请求会拿到 403，抽屉里会显示成"列表加载失败"。
+    if (state.mode === 'live' && can('task.dispatch')
+      && !state.usersState.loaded && !state.usersState.loading) {
       loadUsers();
     }
   }
@@ -4403,6 +4850,7 @@
 
   // 派工表单：只有仍需人操作的工序（待开始 / 进行中 / 暂停）才需要派工
   function dispatchBlock(task) {
+    if (!can('task.dispatch')) return '';
     const status = Number(task.status);
     if (![1, 2, 3].includes(status)) return '';
     const candidates = dispatchCandidates();
@@ -4684,12 +5132,13 @@
       || window.location.hostname === 'localhost'
       || window.location.hostname === '127.0.0.1';
     const credentialNote = localHost
-      ? '本机环境可用种子账号 planner / 123456 联调；该提示不会在非本机地址出现。'
+      ? '本机环境可用种子账号 admin / planner / warehouse / operator / inspector（密码均为 123456），五个角色能看到的操作各不相同。'
       : '请使用管理员分配的网关账号，本页面不提供任何账号密码。';
     const body = `
       <p class="modal-intro">工作台与现有 MES 网关共用同一套识别与路由。登录后可读写真实工单；不连接时仅修改本地演示数据。</p>
       <div class="fact-row"><span>接口地址</span><strong>${escapeHtml(api.state.base)}</strong></div>
-      <div class="fact-row"><span>当前身份</span><strong>${live ? escapeHtml(state.user?.realName || '身份待刷新') : '演示身份，操作不落库'} · ${live ? '已连接网关' : '演示模式'}</strong></div>
+      <div class="fact-row"><span>当前身份</span><strong>${live ? escapeHtml(state.user?.realName || '身份待刷新') : '演示身份，操作不落库'} · ${live ? escapeHtml(roleLabel()) : '演示模式'}</strong></div>
+      <div class="fact-row"><span>角色权限</span><strong>${escapeHtml(permissionSummary())}</strong></div>
       ${live ? `
         <div class="form-note" style="margin-top:16px">当前工作台已经连接网关。订单、工序与库存操作会调用真实接口。</div>
         <div class="form-actions">
@@ -5404,7 +5853,8 @@
     try {
       payload = await api.login(data.username, data.password);
     } catch (error) {
-      api.logout();
+      // 连接守护：登录失败（多为后端离线/502）时不要清掉已存的 token，
+      // 否则隧道恢复后无法自动切回 live。仅在明确的 401 时由 request() 清理。
       state.mode = 'demo';
       resetDemoState();
       render();
@@ -5587,6 +6037,8 @@
   }
 
   function handleActionClick(event) {
+    // 工单队列行内「详情 →」是独立链接：整行负责就地切换，链接仍走原来的详情页
+    if (event.target.closest('.order-row-detail')) return;
     const moreMenu = document.getElementById('mobile-more-menu');
     if (moreMenu && !moreMenu.hidden && !event.target.closest('#mobile-more-menu, [data-action="toggle-mobile-more"]')) {
       setMobileMoreOpen(false);
@@ -5603,6 +6055,19 @@
 
     const orderId = actionElement.dataset.order;
     const taskId = actionElement.dataset.task;
+
+    // 统一权限闸：即使按钮因为页面未重渲染还留着，也按角色拒绝（服务端 RoleGuard 是最后一道）
+    const requiredPermission = action === 'transition-order'
+      ? ORDER_TARGET_PERMISSION[actionElement.dataset.target]
+      : ACTION_PERMISSION[action];
+    if (requiredPermission && !can(requiredPermission)) {
+      showToast(permissionHint(requiredPermission), 'warning');
+      return;
+    }
+    if (requiredPermission && taskId && !isMyTask(findTask(taskId))) {
+      showToast('只能操作派给本人的工序。', 'warning');
+      return;
+    }
 
     switch (action) {
       case 'open-connection':
@@ -5707,6 +6172,9 @@
         break;
       case 'open-order':
         window.location.hash = routeHref('orders', orderId);
+        break;
+      case 'switch-order':
+        switchTravelerOrder(orderId);
         break;
       case 'open-task':
       case 'open-task-from-order':
@@ -6022,7 +6490,24 @@
       else closeDrawer();
       return;
     }
-    const row = event.target.closest('tr[data-action][tabindex="0"]');
+    // 随工单顶部 Tab 芯片：← → Home End 切换，焦点随选中项移动
+    const tab = event.target.closest('.wo-tab');
+    if (tab && (event.key === 'ArrowRight' || event.key === 'ArrowLeft' || event.key === 'Home' || event.key === 'End')) {
+      const tabs = [...document.querySelectorAll('#traveler-tabs .wo-tab')];
+      const at = tabs.indexOf(tab);
+      let next = null;
+      if (event.key === 'ArrowRight') next = (at + 1) % tabs.length;
+      else if (event.key === 'ArrowLeft') next = (at - 1 + tabs.length) % tabs.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = tabs.length - 1;
+      if (next !== null && tabs[next]) {
+        event.preventDefault();
+        switchTravelerOrder(tabs[next].dataset.order, true);
+      }
+      return;
+    }
+    // 队列行与原有表格行：Enter / Space 触发（详情链接自身不拦截，走原生跳转）
+    const row = event.target.closest('tr[data-action][tabindex="0"], .order-row[data-action][tabindex="0"]');
     if (row && event.target === row && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       handleActionClick(event);
@@ -6038,7 +6523,8 @@
       await refreshLiveData();
       showToast('已恢复上次的网关连接。');
     } catch (error) {
-      api.logout();
+      // ⚠️ 连接守护：这里【不要】调用 api.logout()。
+      // token 必须保留，隧道恢复后才能自动切回 live 并继续落库。
       state.mode = 'demo';
       resetDemoState();
       render();
@@ -6106,4 +6592,77 @@
     if (initialView === 'materials') loadInventoryOps();
     if (initialView === 'today') ensureTrendData();
   }
+
+  /* ==================================================================
+   * 连接守护（静态常驻 + 本机后端自动接管）
+   *
+   * 场景：页面永远托管在服务器，API 经 OpenResty 反代到 frp 隧道，
+   *       隧道另一端是用户自己电脑上的网关 9000。
+   *   - 电脑关机 / 隧道断  -> 探测失败 -> 自动切演示模式（保留 token）
+   *   - 电脑开机 / 隧道通  -> 探测成功 -> 自动切回 live 并刷新真实数据
+   *
+   * 用户全程无感，不需要手动点「连接 MES」。
+   * token 只由用户主动断开（disconnect）或 401 时清除。
+   * ================================================================== */
+  let backendOnline = null;          // null=未知 true=在线 false=离线
+  let guardInFlight = false;
+
+  function enterDemoBecauseOffline() {
+    if (state.mode !== 'demo') {
+      state.mode = 'demo';
+      resetDemoState();
+      render();
+    }
+    showToast('后端离线，已切换到演示数据；连接恢复后将自动同步。', 'warning');
+  }
+
+  async function enterLiveBecauseOnline() {
+    // 没有 token（用户从未登录过）时保持演示模式，不强行切 live。
+    if (!api.isLive()) return;
+    state.mode = 'live';
+    state.user = api.state.user || demo.user;
+    state.ordersPage = { current: 1, size: state.ordersPage.size || 10, total: 0, pages: 0 };
+    state.orderStatusCounts = null;
+    state.orderExtras = {};
+    render();
+    try {
+      await refreshLiveData();
+      showToast('后端已连接，已载入真实数据。');
+    } catch (error) {
+      // 数据刷新失败但网关可达：先回演示，等下次探测再试
+      state.mode = 'demo';
+      resetDemoState();
+      render();
+      showToast(`数据读取失败：${error.message}，稍后重试。`, 'warning');
+    }
+  }
+
+  async function connectionGuardTick() {
+    if (guardInFlight || document.hidden) return;   // 页面不可见时不打扰
+    guardInFlight = true;
+    let online = false;
+    try {
+      online = await api.ping();
+    } finally {
+      guardInFlight = false;
+    }
+
+    if (online === backendOnline) return;           // 状态没变，不打扰用户
+    backendOnline = online;
+
+    if (!online) {
+      // 离线：切演示，但【保留 token】
+      enterDemoBecauseOffline();
+    } else if (state.mode === 'demo') {
+      // 恢复：只有在 demo 且曾经登录过（有 token）时才自动切 live
+      if (api.isLive()) await enterLiveBecauseOnline();
+    }
+  }
+
+  // 首屏立即探测一次，之后每 10 秒一次；页面重新可见时补一次
+  connectionGuardTick();
+  window.setInterval(connectionGuardTick, 10000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) connectionGuardTick();
+  });
 })();

@@ -1,0 +1,200 @@
+name: smartmes
+
+# =====================================================================
+# SmartMES 生产部署编排（jar 直挂版，无需在服务器构建镜像）
+#
+# 与仓库根目录 docker-compose.yml 的区别：
+#   - 不含 Nacos / Redis / RabbitMQ（本机演示不需要，服务已做降级）
+#   - 应用改为已构建好的 jar + 统一 JRE 镜像，避免服务器联网跑 Maven
+#   - MySQL 自动按文件名顺序执行 sql/ 初始化 5 个库
+# =====================================================================
+
+x-app-env: &app-env
+  MYSQL_HOST: mysql
+  MYSQL_PORT: "3306"
+  MYSQL_USER: root
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+  NACOS_REGISTER: "false"
+  TZ: Asia/Shanghai
+
+x-app-common: &app-common
+  build:
+    context: .
+    dockerfile: Dockerfile.jre
+  restart: unless-stopped
+  environment: *app-env
+  # 1.8Gi 内存机器的极限配置：每个 JVM 堆上限 192m，容器硬上限 320m。
+  # 不显式设 -Xmx 时 MaxRAMPercentage 会按【宿主总内存】计算，是 OOM 的常见原因。
+  mem_limit: 320m
+  memswap_limit: 320m
+  depends_on:
+    mysql:
+      condition: service_healthy
+  networks:
+    - mes-net
+  # 业务服务不映射宿主端口：只允许网关与容器内网访问，防伪造 X-User-* 头
+  # volumes 统一在下面各服务里按 jar 名覆盖
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mes-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+      - --max-connections=100
+      - --innodb-buffer-pool-size=96M
+      - --performance-schema=OFF
+    mem_limit: 420m
+    memswap_limit: 420m
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 官方镜像按文件名顺序执行；00_create_databases.sql 会 DROP 并重建 5 个库
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_PASSWORD:-123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - mes-net
+
+  smart-system:
+    <<: *app-common
+    container_name: mes-system
+    environment:
+      <<: *app-env
+      JAVA_OPTS: "-Xms64m -Xmx192m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -Dfile.encoding=UTF-8"
+      JWT_SECRET: ${JWT_SECRET}
+    volumes:
+      - ./app/smart-system-1.0.0.jar:/app/app.jar:ro
+    command: ["--spring.cloud.nacos.discovery.enabled=false"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9001/doc.html"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  smart-product:
+    <<: *app-common
+    container_name: mes-product
+    environment:
+      <<: *app-env
+      JAVA_OPTS: "-Xms64m -Xmx192m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -Dfile.encoding=UTF-8"
+    volumes:
+      - ./app/smart-product-1.0.0.jar:/app/app.jar:ro
+    command: ["--spring.cloud.nacos.discovery.enabled=false"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9002/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  smart-inventory:
+    <<: *app-common
+    container_name: mes-inventory
+    environment:
+      <<: *app-env
+      JAVA_OPTS: "-Xms64m -Xmx192m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -Dfile.encoding=UTF-8"
+    volumes:
+      - ./app/smart-inventory-1.0.0.jar:/app/app.jar:ro
+    command:
+      - --spring.cloud.nacos.discovery.enabled=false
+      - --smart.scheduling.enabled=false
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9004/doc.html"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  smart-quality:
+    <<: *app-common
+    container_name: mes-quality
+    environment:
+      <<: *app-env
+      JAVA_OPTS: "-Xms64m -Xmx192m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -Dfile.encoding=UTF-8"
+    volumes:
+      - ./app/smart-quality-1.0.0.jar:/app/app.jar:ro
+    command: ["--spring.cloud.nacos.discovery.enabled=false"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9005/doc.html"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  smart-production:
+    <<: *app-common
+    container_name: mes-production
+    environment:
+      <<: *app-env
+      JAVA_OPTS: "-Xms64m -Xmx192m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -Dfile.encoding=UTF-8"
+      PRODUCT_SERVICE_URL: http://smart-product:9002
+      SMART_MQ_ENABLED: "false"
+      SMART_SCHEDULING_ENABLED: "false"
+    volumes:
+      - ./app/smart-production-1.0.0.jar:/app/app.jar:ro
+    command: ["--spring.cloud.nacos.discovery.enabled=false"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      smart-product:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9003/doc.html"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  smart-gateway:
+    <<: *app-common
+    container_name: mes-gateway
+    environment:
+      <<: *app-env
+      JAVA_OPTS: "-Xms64m -Xmx192m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -Dfile.encoding=UTF-8"
+      JWT_SECRET: ${JWT_SECRET}
+      SYSTEM_SERVICE_URL: http://smart-system:9001
+      PRODUCT_SERVICE_URL: http://smart-product:9002
+      PRODUCTION_SERVICE_URL: http://smart-production:9003
+      INVENTORY_SERVICE_URL: http://smart-inventory:9004
+      QUALITY_SERVICE_URL: http://smart-quality:9005
+      GATEWAY_AUTH_ENABLED: "true"
+    volumes:
+      - ./app/smart-gateway-1.0.0.jar:/app/app.jar:ro
+    ports:
+      # 只把网关暴露到宿主机；由 1Panel / OpenResty 反代到 80
+      - "9000:9000"
+    depends_on:
+      smart-system:
+        condition: service_started
+      smart-product:
+        condition: service_started
+      smart-production:
+        condition: service_started
+      smart-inventory:
+        condition: service_started
+      smart-quality:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+volumes:
+  mysql-data:
+
+networks:
+  mes-net:
+    driver: bridge

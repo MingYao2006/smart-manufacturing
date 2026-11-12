@@ -1,5 +1,6 @@
 package com.smart.system.controller;
 
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.result.Result;
 import com.smart.system.dto.SystemDtos.LoginRequest;
 import com.smart.system.dto.SystemDtos.LoginVO;
@@ -40,15 +41,17 @@ public class AuthController {
         return Result.ok(authService.currentUser(id));
     }
 
-    @Operation(summary = "查询全部用户")
+    @Operation(summary = "查询全部用户", description = "供派工选择操作工，只允许生产计划员调用")
     @GetMapping("/user/list")
     public Result<List<UserVO>> listUsers() {
+        RoleGuard.require("用户名单只允许生产计划员查询", RoleGuard.PLANNER);
         return Result.ok(authService.listUsers());
     }
 
     @Operation(summary = "生成密码哈希（仅用于运维/初始化）")
     @PostMapping("/auth/hash")
     public Result<String> hash(@RequestBody String rawPassword) {
+        RoleGuard.require("生成密码哈希只允许系统管理员调用");
         return Result.ok(authService.hashPassword(rawPassword));
     }
 }

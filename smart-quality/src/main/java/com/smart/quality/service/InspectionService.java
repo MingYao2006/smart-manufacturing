@@ -1,5 +1,6 @@
 package com.smart.quality.service;
 
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.exception.BusinessException;
 import com.smart.common.result.ErrorCode;
 import com.smart.common.util.BizNoGenerator;
@@ -48,6 +49,7 @@ public class InspectionService {
      */
     @Transactional(rollbackFor = Exception.class)
     public InspectionVO createInspection(InspectionCreateDTO dto) {
+        RoleGuard.require("质检单录入只允许质检员执行", RoleGuard.INSPECTOR);
         // 数量校验：合格 + 不良 应等于检验数量
         BigDecimal sum = dto.getQualifiedQuantity().add(dto.getDefectQuantity());
         if (sum.compareTo(dto.getInspectionQuantity()) != 0) {

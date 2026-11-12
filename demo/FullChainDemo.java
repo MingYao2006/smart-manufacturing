@@ -458,27 +458,34 @@ public class FullChainDemo {
         require(pb, "创建产品批次");
         info("产品批次: " + productBatchNo);
 
-        // 记录"物料批次 → 产品批次"关系（真实场景由领料/完工自动写入）
-        int relationCount = 0;
-        for (int i = 0; i < reserveLimit; i++) {
-            JsonNode rel = post("/quality-service/batch/relation",
-                    "{\"sourceBatchNo\":\"MB-DEMO-" + reservable.get(i)[0] + "\","
-                            + "\"targetBatchNo\":\"" + productBatchNo + "\","
-                            + "\"productionOrderId\":" + orderId + ",\"orderNo\":\"" + orderNo + "\","
-                            + "\"quantity\":" + reservable.get(i)[1] + ",\"relationType\":\"CONSUME\"}", true);
-            if (rel.path("code").asInt() == 0) {
-                relationCount++;
+        // 领料时 smart-inventory 已在同事务写了 material_issue_outbox，
+        // 定时任务异步投递给质量服务建边（扫描间隔 3s、启动初始延迟 10s）。
+        // 注意：领料那刻产品批次还没生成，边的 target 本来就是空的（不是漏写），
+        // 完工生成产品批次后由 /batch/relation/bind 按工单号统一回填。
+        // 质量侧也有定时回填任务，可能抢在手工 bind 之前把边回填掉（bind 返回 0），
+        // 所以不能以一次 bind 的返回值判断完成 —— 轮询到反向追溯能查到上游节点为止。
+        int boundCount = 0;
+        JsonNode backward = null;
+        for (int attempt = 0; attempt < 15; attempt++) {
+            JsonNode bound = post("/quality-service/batch/relation/bind?productionOrderId="
+                    + orderId + "&productBatchNo=" + productBatchNo, "", true);
+            require(bound, "完工回填批次关系 target");
+            boundCount += bound.path("data").asInt();
+            backward = get("/quality-service/trace/backward?batchNo=" + productBatchNo, true);
+            require(backward, "反向追溯");
+            if (backward.path("data").path("totalNodes").asInt() >= 2) {
+                break;
             }
+            Thread.sleep(2000);
         }
-        info("记录批次关系 " + relationCount + " 条");
+        info("完工回填空 target 的边累计 " + boundCount + " 条（手工与定时回填互相幂等）");
 
         step("18. 反向追溯（成品 → 原料 + 供应商）");
-        JsonNode backward = get("/quality-service/trace/backward?batchNo=" + productBatchNo, true);
-        require(backward, "反向追溯");
         info(backward.path("data").path("message").asText());
         printTrace(backward.path("data").path("tree"), 1);
         int backwardNodes = backward.path("data").path("totalNodes").asInt();
-        check(backwardNodes >= 2, "反向追溯能查到上游物料批次（" + backwardNodes + " 个批次）");
+        check(backwardNodes >= 2, "异步建边+回填已完成，反向追溯能查到上游物料批次（"
+                + backwardNodes + " 个批次）");
 
         step("19. 正向追溯（原料 → 受影响的成品批次，精准召回）");
         JsonNode forward = get("/quality-service/trace/forward?batchNo=MB-DEMO-" + firstMaterialId, true);

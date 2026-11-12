@@ -1,5 +1,6 @@
 package com.smart.production.service;
 
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.exception.BusinessException;
 import com.smart.common.result.ErrorCode;
 import com.smart.common.util.BizNoGenerator;
@@ -85,9 +86,10 @@ public class ProductionReportService {
                             + taskStatus.getDesc() + "]，只有[进行中]的工序可以报工");
         }
 
+        requireReporter(task);
+
         BigDecimal hours = dto.getActualHours() == null ? BigDecimal.ZERO : dto.getActualHours();
         Long operatorId = dto.getOperatorId();
-
         // ④ 条件更新累加（防超报，并发安全）
         int affected = workTaskMapper.addReportedQuantity(
                 dto.getTaskId(), dto.getReportQuantity(), dto.getQualifiedQuantity(),
@@ -157,6 +159,17 @@ public class ProductionReportService {
                 ? "报工成功，工序已报满，等待质检放行"
                 : (afterStatus == WorkTaskStatus.COMPLETED ? "报工成功，工序已完成" : "报工成功"));
         return vo;
+    }
+
+    /**
+     * 报工的角色门禁：报工是车间的产出动作，只允许操作工，
+     * 而且只能报<b>派给本人</b>的工序——否则任何人都能替别人刷产量。
+     */
+    private void requireReporter(WorkTask task) {
+        RoleGuard.require("提交报工只允许车间操作工执行", RoleGuard.OPERATOR);
+        if (RoleGuard.OPERATOR.equals(RoleGuard.currentRoleOrNull())) {
+            RoleGuard.requireSelf(task.getOperatorId(), "只能报派给本人的工序");
+        }
     }
 
     /**

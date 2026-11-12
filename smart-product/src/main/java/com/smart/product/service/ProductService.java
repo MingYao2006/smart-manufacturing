@@ -2,6 +2,7 @@ package com.smart.product.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.exception.BusinessException;
 import com.smart.common.result.ErrorCode;
 import com.smart.common.result.PageResult;
@@ -86,6 +87,7 @@ public class ProductService {
 
     @Transactional(rollbackFor = Exception.class)
     public Product createProduct(ProductSaveDTO dto) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         Product p = new Product();
         applyProduct(p, dto);
         try {
@@ -101,6 +103,7 @@ public class ProductService {
 
     @Transactional(rollbackFor = Exception.class)
     public Product updateProduct(Long id, ProductSaveDTO dto) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         Product exist = getProduct(id);
         // 编码变更时单独校验唯一性（数据库唯一索引也会兜底）
         if (!exist.getProductCode().equals(dto.getProductCode())) {
@@ -128,6 +131,7 @@ public class ProductService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void deleteProduct(Long id) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         getProduct(id);
         Long bomCount = bomMapper.selectCount(
                 new LambdaQueryWrapper<Bom>().eq(Bom::getProductId, id));
@@ -205,6 +209,7 @@ public class ProductService {
 
     @Transactional(rollbackFor = Exception.class)
     public Material createMaterial(MaterialSaveDTO dto) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         Material m = new Material();
         applyMaterial(m, dto);
         try {
@@ -219,6 +224,7 @@ public class ProductService {
 
     @Transactional(rollbackFor = Exception.class)
     public Material updateMaterial(Long id, MaterialSaveDTO dto) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         Material exist = getMaterial(id);
         applyMaterial(exist, dto);
         exist.setId(id);
@@ -237,6 +243,7 @@ public class ProductService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void deleteMaterial(Long id) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         getMaterial(id);
         Long itemRef = bomItemMapper.selectCount(
                 new LambdaQueryWrapper<BomItem>().eq(BomItem::getMaterialId, id));

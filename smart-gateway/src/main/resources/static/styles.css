@@ -8392,3 +8392,172 @@ body {
 .modal:has(.master-lines) {
   width: min(880px, 100%);
 }
+
+/* ==========================================================================
+   首页随工单：多工单切换（传送带滑移）
+   · 卡片外壳（车间实景图 / 渐变 / 网格底纹 / 顶部 3px 线）保持静止
+   · 只有 .traveler-slide 内容层滑移，避免露出下方 exec-grid 背景
+   · 顶部 Tab 芯片与右侧工单队列都可触发切换
+   ========================================================================== */
+
+/* 舞台：裁切内容层；切换时高度动画由 WAAPI 控制 */
+.traveler-stage {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+}
+
+.traveler-slide {
+  position: relative;
+}
+
+.traveler-slide.is-entering {
+  z-index: 2;
+}
+
+/* ---------- ② 顶部工单 Tab 芯片 ---------- */
+.traveler-tabs {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 13px clamp(24px, 3.2vw, 42px) 12px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  /* 不另设分隔线：下方的 .traveler-head 自带 border-bottom，避免出现两条线 */
+}
+
+.traveler-tabs-label {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  color: var(--on-dark-3);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.wo-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 5px 11px;
+  color: var(--on-dark-1);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(147, 197, 253, 0.22);
+  border-radius: 2px;
+  font-family: var(--font-num);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.wo-tab:hover {
+  color: #fff;
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(147, 197, 253, 0.55);
+}
+
+.wo-tab[aria-selected="true"] {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent-bright);
+  box-shadow: inset 0 -2px 0 var(--accent-bright);
+}
+
+.wo-tab:focus-visible,
+.order-row:focus-visible,
+.order-row-detail:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 3px;
+}
+
+.wo-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent-bright);
+}
+
+.wo-tab.is-paused .wo-dot {
+  background: #f0a44b;
+}
+
+.wo-tab.is-risk .wo-dot {
+  background: #fb7185;
+}
+
+.traveler-tabs-count {
+  flex: 0 0 auto;
+  margin-left: 2px;
+  color: var(--on-dark-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ---------- ④ 队列行内「详情 →」：整行切换，链接单独跳详情 ---------- */
+.order-row-detail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.order-row-detail:hover {
+  text-decoration: underline;
+}
+
+.order-row-detail .row-arrow {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  transition: transform 160ms ease;
+}
+
+.order-row-detail:hover .row-arrow {
+  transform: translateX(3px);
+}
+
+/* 队列行键盘聚焦 */
+.order-row[data-action="switch-order"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+
+/* 不改任何 grid 列数：窄栏里箭头列（18~34px）放不下「详情 →」文字，
+   所以窄屏隐藏文字只保留箭头；宽栏（≥1181px）空间充足时显示完整文字。 */
+.order-row-detail-text {
+  display: none;
+}
+
+@media (min-width: 1181px) {
+  .order-row-detail-text {
+    display: inline;
+  }
+  /* 宽栏下把最后一列从 24/34px 放宽到 52px，容纳「详情 →」 */
+  .order-queue-card .order-row[data-action="switch-order"],
+  .dash-2col .order-queue-card .order-row[data-action="switch-order"] {
+    grid-template-columns:
+      minmax(0, 1.12fr) minmax(0, 1fr) minmax(62px, 0.58fr) minmax(88px, 0.78fr) 52px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wo-tab,
+  .order-row-detail .row-arrow {
+    transition: none;
+  }
+}
+

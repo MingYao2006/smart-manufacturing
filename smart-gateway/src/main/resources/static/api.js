@@ -245,12 +245,32 @@
   const isTaskInspectionPassed = (taskId) => get(`${QUAL}/inspection/task/${taskId}/passed`);
   const defectStats = () => get(`${QUAL}/inspection/defect-stats`);
 
+  // 连接守护用：探测网关是否可达（同源，隧道断时 OpenResty 返回 502）。
+  // 故意走独立 fetch 而不是 request()，避免带上 token、避免被 401 逻辑清状态。
+  async function ping() {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch(`${state.base.replace(/\/$/, '')}/actuator/health`, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      return response.ok;
+    } catch (error) {
+      return false;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
   window.MES_API = {
     state,
     isLive: () => Boolean(state.token),
     request,
     login,
     logout: clearAuth,
+    ping,
     getUser,
     listUsers,
 

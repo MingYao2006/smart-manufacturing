@@ -79,8 +79,8 @@ public class BatchController {
 
     /* ==================== 批次关系 ==================== */
 
-    @Operation(summary = "记录批次关系（领料消耗 / 完工产出）",
-            description = "必须在领料/完工的同一事务内记录，否则追溯链会断")
+    @Operation(summary = "记录批次关系（幂等，供领料 outbox 异步投递）",
+            description = "幂等键=工单号+批次号，重复投递只记一条边；领料阶段 target 为空，完工后按工单号回填")
     @PostMapping("/batch/relation")
     public Result<BatchRelation> recordRelation(@Valid @RequestBody RelationCreateDTO dto) {
         return Result.ok(traceService.recordRelation(dto.getSourceBatchNo(), dto.getTargetBatchNo(),
@@ -88,7 +88,7 @@ public class BatchController {
                 dto.getRelationType()), "批次关系已记录");
     }
 
-    @Operation(summary = "完工时把领料阶段的待关联关系回填到产品批次")
+    @Operation(summary = "完工时把领料阶段的待关联关系回填到产品批次（幂等，另有定时任务反复扫描兜底）")
     @PostMapping("/batch/relation/bind")
     public Result<Integer> bind(@RequestParam Long productionOrderId,
                                 @RequestParam String productBatchNo) {

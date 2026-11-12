@@ -1,6 +1,7 @@
 package com.smart.product.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.smart.common.auth.RoleGuard;
 import com.smart.common.exception.BusinessException;
 import com.smart.common.result.ErrorCode;
 import com.smart.product.dto.ProductDtos.RouteCreateDTO;
@@ -119,6 +120,7 @@ public class ProcessRouteService {
      */
     @Transactional(rollbackFor = Exception.class)
     public RouteVO createRoute(RouteCreateDTO dto) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         Product product = productMapper.selectById(dto.getProductId());
         if (product == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "产品不存在: " + dto.getProductId());
@@ -174,6 +176,7 @@ public class ProcessRouteService {
      */
     @Transactional(rollbackFor = Exception.class)
     public RouteVO activateRoute(Long routeId, LocalDate effectiveDate) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         ProcessRoute route = routeMapper.selectById(routeId);
         if (route == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "工艺路线不存在: " + routeId);
@@ -201,6 +204,7 @@ public class ProcessRouteService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void deleteRoute(Long routeId) {
+        RoleGuard.require("基础资料（产品 / 物料 / BOM / 工艺路线）的维护只允许系统管理员执行");
         ProcessRoute route = routeMapper.selectById(routeId);
         if (route == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "工艺路线不存在: " + routeId);

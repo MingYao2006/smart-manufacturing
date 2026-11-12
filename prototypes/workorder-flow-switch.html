@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>随工单 · 工单流程切换原型</title>
+<style>
+  :root{
+    --board:#f4f7fb; --paper:#fff; --ink:#1f2937; --muted:#667085; --muted-2:#98a2b3;
+    --line:#e4e7ec; --line-strong:#cfd6e0;
+    --on-dark-0:#eaf0f8; --on-dark-1:#c6d3e4; --on-dark-2:#97a9c2; --on-dark-3:#6d809b;
+    --accent:#2563eb; --accent-line:#60a5fa; --accent-bright:#93c5fd; --accent-soft:#eff6ff;
+    --signal:#d92d20; --caution:#dc6803; --forest-deep:#0e1a2b;
+    --font-sans:"HarmonyOS Sans SC","MiSans","Source Han Sans SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+    --font-num:"Bahnschrift SemiCondensed","Bahnschrift","DIN Alternate","Arial Narrow",sans-serif;
+    --ease-out:cubic-bezier(0.2,0.8,0.2,1); --ease-in:cubic-bezier(0.4,0,1,1);
+  }
+  *{box-sizing:border-box}
+  html{min-width:320px}
+  body{margin:0;background:var(--board);color:var(--ink);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+  .svg-defs{position:absolute;width:0;height:0;overflow:hidden}
+  .ico{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto}
+
+  /* ---------- 原型页外壳（仅用于预览，不属于产品界面） ---------- */
+  .proto{max-width:1380px;margin:0 auto;padding:40px 28px 56px}
+  .proto-head{margin:0 0 26px}
+  .proto-kicker{margin:0 0 8px;color:var(--accent);font-size:11px;font-weight:700;letter-spacing:.16em}
+  .proto-head h1{margin:0 0 8px;font-size:26px;font-weight:700;letter-spacing:-.02em}
+  .proto-sub{margin:0;max-width:70ch;color:var(--muted);font-size:13px}
+  .exec-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px;align-items:start}
+
+  /* ---------- 随工单卡片（外壳恒定，不参与滑动） ---------- */
+  .traveler{
+    position:relative;overflow:hidden;color:var(--on-dark-0);
+    background:radial-gradient(circle at 83% 8%,rgba(59,130,246,.26),transparent 34%),
+               linear-gradient(122deg,#07142b 0%,#0c2447 58%,#0f3563 100%);
+    border:1px solid #1d3b66;border-radius:3px;box-shadow:0 20px 46px rgba(8,21,46,.22);
+  }
+  .traveler::before{
+    position:absolute;inset:0;content:"";pointer-events:none;
+    background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);
+    background-size:32px 32px;
+  }
+  .traveler::after{
+    position:absolute;top:0;right:0;left:0;height:3px;content:"";
+    background:linear-gradient(90deg,var(--accent-line) 0 104px,#3b4d53 104px 100%);
+  }
+
+  /* ② 顶部工单 Tab 芯片 */
+  .traveler-tabs{
+    position:relative;z-index:2;display:flex;gap:6px;align-items:center;
+    padding:14px clamp(24px,3.2vw,42px) 0;overflow-x:auto;scrollbar-width:thin;
+  }
+  .traveler-tabs::before{content:"在制工单";flex:0 0 auto;margin-right:4px;color:var(--on-dark-3);font-size:11px;letter-spacing:.1em;white-space:nowrap}
+  .wo-tab{
+    display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;min-height:32px;padding:5px 11px;
+    color:var(--on-dark-1);background:rgba(255,255,255,.06);border:1px solid rgba(147,197,253,.22);
+    border-radius:2px;font-family:var(--font-num);font-size:12.5px;font-weight:600;letter-spacing:.02em;
+    cursor:pointer;white-space:nowrap;transition:background-color 150ms ease,border-color 150ms ease,color 150ms ease;
+  }
+  .wo-tab:hover{color:#fff;background:rgba(37,99,235,.22);border-color:rgba(147,197,253,.55)}
+  .wo-tab[aria-selected="true"]{
+    color:#fff;background:var(--accent);border-color:var(--accent-bright);
+    box-shadow:inset 0 -2px 0 var(--accent-bright);
+  }
+  .wo-tab:focus-visible,.queue-row:focus-visible,.queue-detail:focus-visible,.ghost-light:focus-visible,.route-station:focus-visible,.button:focus-visible{outline:2px solid var(--accent-bright);outline-offset:3px}
+  .wo-dot{width:6px;height:6px;border-radius:50%;background:var(--accent-bright);flex:0 0 auto}
+  .wo-dot.pause{background:#f0a44b}.wo-dot.risk{background:#fb7185}
+  .traveler-tabs .tab-count{flex:0 0 auto;margin-left:2px;color:var(--on-dark-3);font-size:11px;white-space:nowrap}
+
+  /* 滑动舞台：只裁切内容层，外壳与网格底纹保持静止 */
+  .traveler-stage{position:relative;z-index:1;overflow:hidden}
+  .traveler-slide{position:relative}
+
+  .traveler-head{
+    display:grid;grid-template-columns:minmax(170px,.72fr) minmax(300px,1.8fr) auto;
+    gap:clamp(18px,3vw,44px);align-items:start;
+    padding:24px clamp(24px,3.2vw,42px) 22px;border-bottom:1px solid rgba(255,255,255,.12);
+  }
+  .traveler-id{display:flex;flex-direction:column;gap:8px}
+  .traveler-id>span{display:flex;align-items:center;gap:8px;color:var(--on-dark-2);font-size:11.5px;letter-spacing:.09em}
+  .run-label{font-family:var(--font-num);font-style:normal;font-size:10px;letter-spacing:.14em;color:var(--accent-bright);border:1px solid rgba(147,197,253,.4);padding:1px 5px;border-radius:2px}
+  .traveler-id strong{font-family:var(--font-num);font-size:20px;letter-spacing:.03em;color:#fff;white-space:nowrap}
+  .traveler-product h2{margin:-2px 0 6px;font-size:clamp(17px,1.5vw,21px);font-weight:680;letter-spacing:-.01em;color:#fff}
+  .traveler-product p{display:flex;flex-wrap:wrap;gap:4px 18px;margin:0;color:var(--on-dark-1);font-size:12px}
+  .traveler-product p span{display:inline-flex;align-items:center;gap:6px}
+  .due-count{padding:1px 7px;border:1px solid rgba(250,157,50,.45);border-radius:2px;color:#f8c98a;font-family:var(--font-num);font-weight:700;font-size:11px}
+  .due-count.is-risk{border-color:rgba(251,113,133,.55);color:#fda4af}
+  .ghost-light{
+    display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:6px 12px;
+    color:#fff;background:rgba(37,99,235,.16);border:1px solid rgba(147,197,253,.45);
+    border-radius:2px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;
+    transition:background-color 150ms ease;
+  }
+  .ghost-light:hover{background:rgba(37,99,235,.34)}
+
+  /* 工序流程图 */
+  .route-zone{padding:30px clamp(24px,3.2vw,42px) 34px}
+  .route-track-wrap{position:relative;padding-top:14px}
+  .route-line,.route-progress{position:absolute;top:21px;height:1px}
+  .route-line{right:5.5%;left:5.5%;background:rgba(255,255,255,.15)}
+  .route-progress{right:auto;left:5.5%;width:89%;transform:scaleX(var(--route-progress,0));transform-origin:left center;
+    background:linear-gradient(90deg,var(--accent),var(--accent-bright));box-shadow:0 0 10px rgba(59,130,246,.34)}
+  .route-stations{position:relative;display:grid;grid-template-columns:repeat(var(--station-count,3),1fr)}
+  .route-station{position:relative;display:grid;justify-items:center;padding:0 8px;background:transparent;border:0;border-radius:2px;cursor:pointer;text-align:center}
+  .station-step{margin-bottom:6px;color:var(--on-dark-3);font-size:11px;letter-spacing:.12em;font-family:var(--font-num)}
+  .station-node{
+    position:relative;z-index:2;display:grid;place-items:center;width:15px;height:15px;margin-bottom:17px;
+    background:#0b1e3a;border:1px solid #5d789e;border-radius:50%;
+  }
+  .route-station.is-done .station-node{background:var(--accent);border-color:var(--accent-bright)}
+  .route-station.is-done .station-node::after{width:5px;height:3px;content:"";border-bottom:1.5px solid #eff6ff;border-left:1.5px solid #eff6ff;transform:translateY(-1px) rotate(-45deg)}
+  .route-station.is-current .station-node{
+    width:19px;height:19px;margin-top:-2px;margin-bottom:15px;background:var(--accent-bright);border-color:#dbeafe;
+    box-shadow:0 0 0 7px rgba(59,130,246,.18);
+  }
+  .route-station.is-current .station-node::before{position:absolute;inset:-11px;content:"";border:1px solid rgba(147,197,253,.65);border-radius:50%;animation:beacon 2.4s ease-out infinite}
+  .route-station.is-current .station-node::after{width:4px;height:4px;content:"";border-radius:50%;background:#0b2a5b}
+  .station-name{color:#edf5ff;font-size:clamp(13px,1.15vw,16px);font-weight:630}
+  .route-station:not(.is-done):not(.is-current) .station-name{color:#b7c9e0}
+  .station-meta{margin-top:6px;color:var(--on-dark-3);font-size:11px}
+  .gate-tag{display:inline-flex;align-items:center;gap:4px;margin-top:7px;color:#fbbf24;font-size:10.5px;letter-spacing:.04em}
+  .gate-tag::before{width:5px;height:5px;content:"";border:1px solid currentColor;transform:rotate(45deg)}
+
+  .traveler-foot{
+    display:grid;grid-template-columns:minmax(210px,1.28fr) minmax(190px,1fr) auto;
+    gap:clamp(16px,2.6vw,40px);align-items:center;
+    padding:20px clamp(24px,3.2vw,42px) 24px;background:rgba(4,11,14,.34);border-top:1px solid rgba(255,255,255,.12);
+  }
+  .focus-task{display:flex;align-items:center;gap:14px;min-width:0}
+  .focus-mark{display:grid;place-items:center;flex:0 0 auto;width:44px;height:44px;color:var(--accent-bright);background:rgba(37,99,235,.15);border:1px solid rgba(147,197,253,.48);border-radius:2px}
+  .focus-mark .ico{width:21px;height:21px}
+  .focus-copy{min-width:0}
+  .focus-copy h3{margin:0;color:#fff;font-size:18px;font-weight:660;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .focus-copy p{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin:4px 0 0;color:var(--on-dark-1);font-size:11.5px}
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:1px 7px;border:1px solid rgba(147,197,253,.35);border-radius:2px;color:var(--accent-bright);font-size:10.5px}
+  .pill::before{width:5px;height:5px;content:"";border-radius:50%;background:currentColor}
+  .pill.warn{color:#f0a44b;border-color:rgba(240,164,75,.4)}
+  .qty-meter-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;color:var(--on-dark-2);font-size:11.5px}
+  .qty-meter-head strong{color:#fff;font-family:var(--font-num);font-size:17px;font-variant-numeric:tabular-nums}
+  .qty-meter-head strong span{color:#959ba5;font-size:12px}
+  .qty-track{height:5px;margin-top:9px;background:rgba(255,255,255,.12);border-radius:3px;overflow:hidden}
+  .qty-track span{display:block;height:100%;width:var(--value,0%);background:linear-gradient(90deg,var(--accent),var(--accent-bright))}
+  .task-actions{display:flex;justify-content:flex-end}
+  .button{display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:6px 13px;background:rgba(255,255,255,.08);border:1px solid rgba(147,197,253,.4);border-radius:2px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background-color 150ms ease}
+  .button:hover{background:rgba(37,99,235,.3)}
+  .button.primary{background:var(--accent);border-color:var(--accent-bright)}
+  .button.primary:hover{background:#1d4ed8}
+
+  /* ④ 右侧工单队列（浅色） */
+  .queue-card{background:var(--paper);border:1px solid var(--line);border-top:3px solid var(--accent-line);border-radius:3px;box-shadow:0 1px 2px rgba(16,24,40,.06),0 6px 16px rgba(16,24,40,.06)}
+  .queue-head{padding:20px 20px 16px}
+  .queue-kicker{margin:0 0 6px;color:var(--accent);font-size:10.5px;font-weight:700;letter-spacing:.16em}
+  .queue-head h2{margin:0 0 4px;font-size:18px;font-weight:680;letter-spacing:-.02em}
+  .queue-head p{margin:0;color:var(--muted-2);font-size:12px}
+  .order-list{border-top:2px solid var(--ink)}
+  .queue-row{
+    position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;
+    min-height:96px;padding:14px 14px 14px 16px;border-bottom:1px solid var(--line);
+    cursor:pointer;transition:background-color 160ms ease,box-shadow 160ms ease;
+  }
+  .queue-row::before{position:absolute;top:0;bottom:0;left:0;width:2px;content:"";background:transparent}
+  .queue-row:hover{background:rgba(239,246,255,.78)}
+  .queue-row:hover::before,.queue-row.is-current::before{background:var(--accent)}
+  .queue-row.is-risk::before{background:var(--signal)}
+  .queue-row.is-current{background:#f7faff;box-shadow:inset 0 0 0 1px var(--line)}
+  .queue-main{min-width:0}
+  .queue-no{display:flex;align-items:center;gap:8px;color:var(--muted-2);font-size:11.5px;font-family:var(--font-num);letter-spacing:.03em}
+  .queue-status{font-family:var(--font-sans);font-size:10.5px;padding:0 6px;border:1px solid var(--line-strong);border-radius:2px;color:var(--muted)}
+  .queue-status.pause{color:var(--caution);border-color:#f3c68b;background:#fff7e8}
+  .queue-status.risk{color:var(--signal);border-color:#f5b5b0;background:#fef0ef}
+  .queue-product{margin:5px 0 2px;font-size:14px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .queue-step{margin:0;color:var(--muted);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .queue-due{margin:7px 0 0;color:var(--muted-2);font-size:11px}
+  .queue-due b{color:var(--caution);font-family:var(--font-num)}
+  .queue-due b.risk{color:var(--signal)}
+  .queue-side{display:flex;flex-direction:column;align-items:flex-end;justify-content:space-between;gap:8px}
+  .queue-pct{font-family:var(--font-num);font-size:18px;font-weight:700;color:var(--ink)}
+  .queue-pct small{font-size:11px;font-weight:400;color:var(--muted-2)}
+  .queue-detail{display:inline-flex;align-items:center;gap:4px;padding:3px 0;background:none;border:0;color:var(--accent);font-size:11.5px;font-weight:600;cursor:pointer}
+  .queue-detail:hover{text-decoration:underline}
+  .queue-detail .ico{width:13px;height:13px}
+  .queue-bar{grid-column:1/-1;height:3px;background:var(--line);border-radius:2px;overflow:hidden}
+  .queue-bar span{display:block;height:100%;background:var(--accent);width:var(--value,0%)}
+
+  /* ---------- 预览辅助 ---------- */
+  .proto-foot{margin-top:28px;padding-top:18px;border-top:1px solid var(--line-strong);color:var(--muted);font-size:12px}
+  .proto-foot label{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+  .proto-foot ul{margin:12px 0 0;padding-left:18px;max-width:90ch}
+  .proto-foot li{margin:4px 0}
+  .toast{position:fixed;right:24px;bottom:24px;z-index:20;padding:11px 16px;background:#0e1a2b;color:#eaf0f8;border:1px solid #2c4a75;border-left:3px solid var(--accent-line);border-radius:3px;font-size:12.5px;box-shadow:0 12px 32px rgba(16,24,40,.24)}
+
+  @keyframes beacon{0%{opacity:.8;transform:scale(.72)}70%,100%{opacity:0;transform:scale(1.3)}}
+  @media (max-width:1080px){.exec-grid{grid-template-columns:1fr}.traveler-head{grid-template-columns:1fr auto}.traveler-product{grid-column:1/-1;grid-row:2}}
+  @media (max-width:640px){.proto{padding:24px 14px 40px}.traveler-head,.traveler-foot{grid-template-columns:1fr}.task-actions{justify-content:flex-start}.traveler-foot{gap:16px}.route-track-wrap{overflow-x:auto}.route-stations{min-width:520px}}
+  @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+  body.force-reduce *,body.force-reduce *::before,body.force-reduce *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+</style>
+</head>
+<body>
+<svg class="svg-defs" aria-hidden="true"><defs>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-tasks" viewBox="0 0 24 24"><path d="M4 6h9M4 12h9M4 18h9M17 7l2 2 3-4M17 13l2 2 3-4"/></symbol>
+</defs></svg>
+
+<main class="proto">
+  <header class="proto-head">
+    <p class="proto-kicker">WORK ORDER · 交互原型</p>
+    <h1>随工单 · 工单流程切换</h1>
+    <p class="proto-sub">在制工单之间切换，工序流程图随之更新。点击卡片顶部的工单号，或右侧「工单队列」的任意一行；「详情 →」仍单独跳详情。试试快速连点与键盘方向键。</p>
+  </header>
+
+  <div class="exec-grid">
+    <section class="traveler" aria-label="当前随工单">
+      <div class="traveler-tabs" id="tabs" role="tablist" aria-label="切换在制工单"></div>
+      <div class="traveler-stage" id="stage"></div>
+    </section>
+
+    <section class="queue-card" aria-labelledby="queue-title">
+      <div class="queue-head">
+        <p class="queue-kicker">ORDER QUEUE</p>
+        <h2 id="queue-title">工单队列</h2>
+        <p>按交期与阻断风险排序 · 点击整行切换随工单</p>
+      </div>
+      <div class="order-list" id="queue"></div>
+    </section>
+  </div>
+
+  <p class="sr-only" id="live" aria-live="polite"></p>
+
+  <footer class="proto-foot">
+    <label><input type="checkbox" id="reduce"> 模拟「减少动效」（prefers-reduced-motion: reduce）</label>
+    <ul>
+      <li><b>传送带滑移</b>：只有内容层滑动，卡片外壳、渐变与网格底纹保持静止；往后切换向左滑出 / 从右滑入，往前反向。退出 180ms、进入 300ms，重叠约 40ms。</li>
+      <li><b>点缀</b>：新工单的进度线重新生长、工序节点按 30ms 间隔逐道亮起、当前工序重启 beacon 脉冲，把视线引到新的当前工序。</li>
+      <li><b>连点可打断</b>：切换瞬间就写入数据并渲染，动画只负责入场；连续快速点击不会出现「画面是 A、数据是 B」。</li>
+      <li><b>键盘 / 读屏</b>：Tab 芯片支持 ← → Home End；切换后焦点不丢失；工单号与当前工序通过 aria-live 播报；勾选「减少动效」后瞬时切换。</li>
+      <li><b>范围</b>：只列未关闭工单，顺序与队列一致，保证滑移方向符合直觉。</li>
+    </ul>
+  </footer>
+</main>
+
+<script>
+(function(){
+  'use strict';
+
+  /* ---------- 演示数据：不同产品 / 不同工序数 / 不同进度 ---------- */
+  var ORDERS = [
+    {
+      orderNo:'WO-2026-0318', product:'高压配电柜 KYN28-12', spec:'GGD / 1250A', qty:120, unit:'台',
+      due:'03-22 18:00', dueText:'剩 3 天', route:'V3', status:'在制', tone:'', pct:48,
+      current:2, reported:58, planQty:120,
+      steps:[
+        {no:'10',name:'钣金下料',center:'钣金车间',operator:'李建国'},
+        {no:'20',name:'折弯成型',center:'钣金车间',operator:'王海'},
+        {no:'30',name:'一次装配',center:'装配一线',operator:'张伟'},
+        {no:'40',name:'二次布线',center:'装配一线',operator:'陈敏',inspection:true},
+        {no:'50',name:'耐压测试',center:'检验站',operator:'待派工',inspection:true}
+      ]
+    },
+    {
+      orderNo:'WO-2026-0319', product:'智能断路器 RMW1-2000', spec:'3P / 1600A', qty:80, unit:'台',
+      due:'03-21 14:00', dueText:'临期 1 天', route:'V2', status:'暂停', tone:'pause', pct:31,
+      current:1, reported:25, planQty:80,
+      steps:[
+        {no:'10',name:'壳体注塑',center:'注塑车间',operator:'赵磊'},
+        {no:'20',name:'触头装配',center:'装配二线',operator:'孙丽'},
+        {no:'30',name:'脱扣器校验',center:'检验站',operator:'待派工',inspection:true},
+        {no:'40',name:'总装调试',center:'装配二线',operator:'待派工'}
+      ]
+    },
+    {
+      orderNo:'WO-2026-0320', product:'环网柜 HXGN15-12', spec:'630A', qty:60, unit:'台',
+      due:'03-25 16:00', dueText:'剩 6 天', route:'V1', status:'在制', tone:'', pct:12,
+      current:0, reported:7, planQty:60,
+      steps:[
+        {no:'10',name:'柜体焊接',center:'焊装车间',operator:'周强'},
+        {no:'20',name:'焊缝打磨',center:'焊装车间',operator:'周强'},
+        {no:'30',name:'气箱装配',center:'装配一线',operator:'待派工'},
+        {no:'40',name:'SF6 充气',center:'装配一线',operator:'待派工'},
+        {no:'50',name:'局放检测',center:'检验站',operator:'待派工',inspection:true},
+        {no:'60',name:'成品入库',center:'成品库',operator:'待派工'}
+      ]
+    },
+    {
+      orderNo:'WO-2026-0321', product:'低压抽出式开关柜 MNS', spec:'4000A', qty:45, unit:'台',
+      due:'03-27 18:00', dueText:'剩 8 天', route:'V4', status:'在制', tone:'', pct:76,
+      current:3, reported:34, planQty:45,
+      steps:[
+        {no:'10',name:'型材切割',center:'钣金车间',operator:'吴斌'},
+        {no:'20',name:'框架组装',center:'装配三线',operator:'吴斌'},
+        {no:'30',name:'抽屉装配',center:'装配三线',operator:'郑霞'},
+        {no:'40',name:'母排连接',center:'装配三线',operator:'郑霞'},
+        {no:'50',name:'通电试验',center:'检验站',operator:'待派工',inspection:true}
+      ]
+    },
+    {
+      orderNo:'WO-2026-0322', product:'箱式变电站 YB-12', spec:'630kVA', qty:20, unit:'台',
+      due:'03-29 12:00', dueText:'剩 10 天', route:'V1', status:'在制', tone:'', pct:5,
+      current:0, reported:1, planQty:20,
+      steps:[
+        {no:'10',name:'箱体拼装',center:'焊装车间',operator:'冯刚'},
+        {no:'20',name:'变压器就位',center:'总装车间',operator:'待派工'},
+        {no:'30',name:'联调验收',center:'检验站',operator:'待派工',inspection:true}
+      ]
+    }
+  ];
+
+  var EASE_OUT = 'cubic-bezier(0.2,0.8,0.2,1)';
+  var EASE_IN  = 'cubic-bezier(0.4,0,1,1)';
+  var reduceQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  var stage = document.getElementById('stage');
+  var tabsEl = document.getElementById('tabs');
+  var queueEl = document.getElementById('queue');
+  var liveEl = document.getElementById('live');
+  var reduceBox = document.getElementById('reduce');
+
+  var index = 0;
+  var activeEl = null;       // 当前内容层
+  var exitingEls = [];       // 正在退出的层
+  var anims = [];            // 全部在途 WAAPI 动画，便于一键取消
+  var toastTimer = null;
+
+  function esc(value){
+    return String(value == null ? '' : value).replace(/[&<>"']/g,function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function icon(name, cls){ return '<svg class="ico '+(cls||'')+'" aria-hidden="true"><use href="#i-'+name+'"/></svg>'; }
+  function reduced(){ return reduceQuery.matches || document.body.classList.contains('force-reduce'); }
+
+  function track(anim){
+    anims.push(anim);
+    var done = function(){ var i = anims.indexOf(anim); if(i >= 0) anims.splice(i,1); };
+    anim.finished.then(done, done);
+    return anim;
+  }
+
+  /* 关键：取消在途动画后，把「上次的目标层」强制设为最终可见状态。
+     数据状态由 switchTo 立即写入，动画只负责入场，所以连点不会产生错态。 */
+  function cancelInFlight(){
+    anims.slice().forEach(function(a){ try { a.cancel(); } catch(e){} });
+    anims.length = 0;
+    exitingEls.forEach(function(el){ el.remove(); });
+    exitingEls.length = 0;
+    if(activeEl){
+      activeEl.style.opacity = '1';
+      activeEl.style.transform = 'none';
+      activeEl.style.position = '';
+      activeEl.style.inset = '';
+      activeEl.style.zIndex = '';
+      activeEl.style.pointerEvents = '';
+    }
+  }
+
+  /* ---------- 渲染：内容层 ---------- */
+  function buildSlide(order){
+    var current = order.steps[order.current];
+    var progress = Math.min(1,(order.current + 0.52) / Math.max(1,order.steps.length));
+    var qtyPct = order.planQty ? Math.min(100,Math.round(order.reported / order.planQty * 100)) : 0;
+    var stations = order.steps.map(function(step,i){
+      var done = i < order.current;
+      var isCurrent = i === order.current;
+      var cls = 'route-station' + (done ? ' is-done' : '') + (isCurrent ? ' is-current' : '');
+      return '<button class="'+cls+'" type="button" data-step="'+esc(step.no)+'" aria-label="工序 '+esc(step.no)+' '+esc(step.name)+(isCurrent?'，当前工序':'')+'">'+
+        '<span class="station-step">工序 '+esc(step.no)+'</span>'+
+        '<span class="station-node" aria-hidden="true"></span>'+
+        '<span class="station-name">'+esc(step.name)+'</span>'+
+        '<span class="station-meta">'+esc(step.operator)+' · '+esc(step.center)+'</span>'+
+        (step.inspection ? '<span class="gate-tag">质检门禁</span>' : '')+
+      '</button>';
+    }).join('');
+
+    var el = document.createElement('div');
+    el.className = 'traveler-slide';
+    el.innerHTML =
+      '<div class="traveler-head">'+
+        '<div class="traveler-id">'+
+          '<span>当前随工单 <em class="run-label">RUN CARD</em></span>'+
+          '<strong>'+esc(order.orderNo)+'</strong>'+
+        '</div>'+
+        '<div class="traveler-product">'+
+          '<h2>'+esc(order.product)+'</h2>'+
+          '<p><span>'+esc(order.spec)+'</span><span>'+esc(order.qty)+' '+esc(order.unit)+'</span>'+
+             '<span>交期 '+esc(order.due)+' <b class="due-count'+(order.tone === 'risk' ? ' is-risk' : '')+'">'+esc(order.dueText)+'</b></span>'+
+             '<span>路线 '+esc(order.route)+'</span></p>'+
+        '</div>'+
+        '<button class="ghost-light" type="button" data-detail="'+esc(order.orderNo)+'">工单详情 '+icon('arrow')+'</button>'+
+      '</div>'+
+      '<div class="route-zone" style="--station-count:'+order.steps.length+';--route-progress:'+progress.toFixed(3)+'">'+
+        '<div class="route-track-wrap">'+
+          '<span class="route-line" aria-hidden="true"></span>'+
+          '<span class="route-progress" aria-hidden="true"></span>'+
+          '<div class="route-stations">'+stations+'</div>'+
+        '</div>'+
+      '</div>'+
+      '<div class="traveler-foot">'+
+        '<div class="focus-task">'+
+          '<span class="focus-mark">'+icon('tasks')+'</span>'+
+          '<div class="focus-copy">'+
+            '<h3>'+esc(current.name)+'</h3>'+
+            '<p><span class="pill'+(order.status === '暂停' ? ' warn' : '')+'">'+esc(order.status)+'</span>'+
+               '<span>'+esc(current.operator)+' · '+esc(current.center)+'</span></p>'+
+          '</div>'+
+        '</div>'+
+        '<div class="qty-meter">'+
+          '<div class="qty-meter-head"><span>本工序已报工</span><strong>'+esc(order.reported)+' <span>/ '+esc(order.planQty)+'</span></strong></div>'+
+          '<div class="qty-track" style="--value:'+qtyPct+'%"><span></span></div>'+
+        '</div>'+
+        '<div class="task-actions"><button class="button primary" type="button" data-toast="原型：提交「'+esc(current.name)+'」报工">完成工序</button></div>'+
+      '</div>';
+    return el;
+  }
+
+  /* ---------- 渲染：Tab 芯片（只更新状态，不重建 DOM，焦点不丢） ---------- */
+  function renderTabs(){
+    tabsEl.innerHTML = ORDERS.map(function(o,i){
+      var dot = o.tone ? ' ' + o.tone : '';
+      return '<button class="wo-tab" type="button" role="tab" id="tab-'+i+'" data-index="'+i+'"'+
+        ' aria-selected="'+(i === index)+'" tabindex="'+(i === index ? '0' : '-1')+'"'+
+        ' aria-label="'+esc(o.orderNo)+'，'+esc(o.product)+'，'+esc(o.status)+'">'+
+        '<span class="wo-dot'+dot+'" aria-hidden="true"></span>'+esc(o.orderNo)+'</button>';
+    }).join('') + '<span class="tab-count">'+ORDERS.length+' 张在制</span>';
+  }
+  function syncTabs(){
+    Array.prototype.forEach.call(tabsEl.querySelectorAll('.wo-tab'),function(tab,i){
+      tab.setAttribute('aria-selected', String(i === index));
+      tab.tabIndex = i === index ? 0 : -1;
+    });
+  }
+
+  /* ---------- 渲染：右侧队列 ---------- */
+  function renderQueue(){
+    queueEl.innerHTML = ORDERS.map(function(o,i){
+      var step = o.steps[o.current];
+      return '<div class="queue-row'+(i === index ? ' is-current' : '')+(o.tone === 'risk' ? ' is-risk' : '')+'"'+
+        ' role="button" tabindex="0" data-index="'+i+'" aria-label="切换到 '+esc(o.orderNo)+'，'+esc(o.product)+'">'+
+        '<div class="queue-main">'+
+          '<div class="queue-no">'+esc(o.orderNo)+'<span class="queue-status'+(o.tone ? ' '+esc(o.tone) : '')+'">'+esc(o.status)+'</span></div>'+
+          '<p class="queue-product">'+esc(o.product)+'</p>'+
+          '<p class="queue-step">当前工序 · '+esc(step.name)+'</p>'+
+          '<p class="queue-due">交期 '+esc(o.due)+' · <b'+(o.tone === 'risk' ? ' class="risk"' : '')+'>'+esc(o.dueText)+'</b></p>'+
+        '</div>'+
+        '<div class="queue-side">'+
+          '<div class="queue-pct">'+esc(o.pct)+'%<small> 完成</small></div>'+
+          '<button class="queue-detail" type="button" data-detail="'+esc(o.orderNo)+'" aria-label="查看工单 '+esc(o.orderNo)+' 详情">详情 '+icon('arrow')+'</button>'+
+        '</div>'+
+        '<div class="queue-bar" style="--value:'+esc(o.pct)+'%"><span></span></div>'+
+      '</div>';
+    }).join('');
+  }
+  function syncQueue(){
+    Array.prototype.forEach.call(queueEl.querySelectorAll('.queue-row'),function(row,i){
+      row.classList.toggle('is-current', i === index);
+    });
+  }
+
+  /* ---------- 点缀：进度线重绘 + 节点逐道亮起 ---------- */
+  function decorate(slide){
+    var zone = slide.querySelector('.route-zone');
+    var target = getComputedStyle(zone).getPropertyValue('--route-progress').trim() || '0';
+    var line = slide.querySelector('.route-progress');
+    track(line.animate(
+      [{transform:'scaleX(0)'},{transform:'scaleX('+target+')'}],
+      {duration:520,delay:60,easing:EASE_OUT,fill:'both'}
+    ));
+    Array.prototype.forEach.call(slide.querySelectorAll('.route-station'),function(st,i){
+      track(st.animate(
+        [{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'none'}],
+        {duration:300,delay:80 + i*30,easing:EASE_OUT,fill:'both'}
+      ));
+    });
+  }
+
+  function announce(order){
+    liveEl.textContent = '当前随工单 '+order.orderNo+'，'+order.product+'，共 '+order.steps.length+
+      ' 道工序，当前工序 '+order.steps[order.current].name+'。';
+  }
+
+  /* ---------- 核心：切换 ---------- */
+  function switchTo(next, opts){
+    next = Math.max(0,Math.min(ORDERS.length-1,next));
+    if(next === index && activeEl) return;
+    var dir = next >= index ? 1 : -1;
+    cancelInFlight();          // 先把屏幕内容固定在正确的最终状态
+    index = next;              // 数据状态立即写入
+    var order = ORDERS[index];
+    syncTabs(); syncQueue(); announce(order);
+
+    var outgoing = activeEl;
+    var incoming = buildSlide(order);
+
+    // 先量旧层高度（此时舞台里只有旧层，数值准确）
+    var oldHeight = outgoing ? outgoing.getBoundingClientRect().height : 0;
+
+    // 新层先绝对定位测量，不与旧层并排导致舞台被撑高
+    incoming.style.position = 'absolute';
+    incoming.style.inset = '0';
+    stage.appendChild(incoming);
+    var newHeight = incoming.getBoundingClientRect().height;
+    incoming.style.position = '';
+    incoming.style.inset = '';
+    activeEl = incoming;
+
+    if(reduced()){
+      if(outgoing) outgoing.remove();
+      return;                  // 减少动效：瞬时替换，无入场动画
+    }
+
+    // 新旧高度不同时（工序数量变化），平滑过渡容器高度，避免下方队列跳一下
+    // stage 高度固定为旧高度，待动画结束后恢复 auto，保证退出层有正确高度参照
+    if(outgoing && Math.abs(newHeight - oldHeight) > 1){
+      track(stage.animate(
+        [{height:oldHeight+'px'},{height:newHeight+'px'}],
+        {duration:280,easing:EASE_OUT}
+      ));
+    }
+
+    // 旧层退出：方向随上一张 / 下一张反转，退出快于进入
+    if(outgoing){
+      outgoing.style.position = 'absolute';
+      outgoing.style.inset = '0';
+      outgoing.style.zIndex = '1';
+      outgoing.style.pointerEvents = 'none';
+      exitingEls.push(outgoing);
+      var out = track(outgoing.animate(
+        [{opacity:1,transform:'none'},{opacity:0,transform:'translateX('+(-dir*20)+'px)'}],
+        {duration:180,easing:EASE_IN,fill:'forwards'}
+      ));
+      out.finished.then(function(){ outgoing.remove(); var k=exitingEls.indexOf(outgoing); if(k>=0) exitingEls.splice(k,1); },function(){});
+    }
+
+    // 新层入场
+    var inAnim = track(incoming.animate(
+      [{opacity:0,transform:'translateX('+(dir*20)+'px)'},{opacity:1,transform:'none'}],
+      {duration:300,delay:40,easing:EASE_OUT,fill:'both'}
+    ));
+    inAnim.finished.then(function(){
+      if(activeEl === incoming){ incoming.style.opacity=''; incoming.style.transform=''; }
+    },function(){});
+
+    decorate(incoming);
+
+    // 键盘操作时把焦点带到新选中的芯片（点击时不抢焦点）
+    if(opts && opts.focusTab){
+      var tab = tabsEl.querySelector('#tab-'+index);
+      if(tab) tab.focus();
+    }
+  }
+
+  /* ---------- 交互 ---------- */
+  tabsEl.addEventListener('click',function(e){
+    var tab = e.target.closest('.wo-tab');
+    if(tab) switchTo(Number(tab.dataset.index));
+  });
+  tabsEl.addEventListener('keydown',function(e){
+    var tab = e.target.closest('.wo-tab');
+    if(!tab) return;
+    var at = Number(tab.dataset.index), next = null;
+    if(e.key === 'ArrowRight') next = (at+1) % ORDERS.length;
+    else if(e.key === 'ArrowLeft') next = (at-1+ORDERS.length) % ORDERS.length;
+    else if(e.key === 'Home') next = 0;
+    else if(e.key === 'End') next = ORDERS.length-1;
+    if(next === null) return;
+    e.preventDefault();
+    switchTo(next,{focusTab:true});
+  });
+
+  queueEl.addEventListener('click',function(e){
+    var detail = e.target.closest('[data-detail]');
+    if(detail){ e.stopPropagation(); showToast('原型：跳转工单 '+detail.dataset.detail+' 详情'); return; }
+    var row = e.target.closest('.queue-row');
+    if(row) switchTo(Number(row.dataset.index));
+  });
+  queueEl.addEventListener('keydown',function(e){
+    if(e.target.closest('[data-detail]')) return;   // 详情按钮自己处理 Enter/Space
+    var row = e.target.closest('.queue-row');
+    if(!row || (e.key !== 'Enter' && e.key !== ' ')) return;
+    e.preventDefault();
+    switchTo(Number(row.dataset.index));
+  });
+
+  stage.addEventListener('click',function(e){
+    var detail = e.target.closest('[data-detail]');
+    if(detail){ showToast('原型：跳转工单 '+detail.dataset.detail+' 详情'); return; }
+    var toast = e.target.closest('[data-toast]');
+    if(toast){ showToast(toast.dataset.toast); return; }
+    var st = e.target.closest('.route-station');
+    if(st){ showToast('原型：打开工序 '+st.dataset.step+' 详情'); }
+  });
+
+  reduceBox.addEventListener('change',function(){
+    document.body.classList.toggle('force-reduce', reduceBox.checked);
+    cancelInFlight();
+  });
+  reduceQuery.addEventListener && reduceQuery.addEventListener('change',function(){ cancelInFlight(); });
+
+  function showToast(text){
+    var old = document.querySelector('.toast'); if(old) old.remove();
+    var el = document.createElement('div'); el.className='toast'; el.setAttribute('role','status'); el.textContent=text;
+    document.body.appendChild(el);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ el.remove(); },2200);
+  }
+
+  /* ---------- 首屏：一次轻入场，让用户打开就看到进度线生长与节点点亮 ---------- */
+  renderTabs(); renderQueue();
+  var first = buildSlide(ORDERS[index]);
+  stage.appendChild(first);
+  activeEl = first;
+  announce(ORDERS[index]);
+  if(!reduced()){
+    track(first.animate([{opacity:0},{opacity:1}],{duration:320,easing:EASE_OUT}));
+    decorate(first);
+  }
+})();
+</script>
+</body>
+</html>

@@ -65,7 +65,7 @@ CREATE TABLE batch_relation (
     id                  BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
     source_batch_id     BIGINT        NOT NULL COMMENT '源批次（被消耗的物料批次）',
     source_batch_no     VARCHAR(64)            DEFAULT NULL COMMENT '源批次号快照',
-    target_batch_id     BIGINT        NOT NULL COMMENT '目标批次（产出的产品批次）',
+    target_batch_id     BIGINT                 DEFAULT NULL COMMENT '目标批次（产出的产品批次）；领料阶段产品批次未生成，为空待完工回填',
     target_batch_no     VARCHAR(64)            DEFAULT NULL COMMENT '目标批次号快照',
     production_order_id BIGINT                 DEFAULT NULL COMMENT '关联工单（追溯上下文）',
     order_no            VARCHAR(64)            DEFAULT NULL COMMENT '工单号快照',
@@ -74,6 +74,8 @@ CREATE TABLE batch_relation (
     is_reversed         TINYINT       NOT NULL DEFAULT 0 COMMENT '是否被退料冲正 0-否 1-是',
     create_time         DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (id),
+    UNIQUE KEY uk_relation_consume (production_order_id, source_batch_no, relation_type)
+        COMMENT '🔑工单号+批次号幂等：outbox 重复投递只记一条边',
     KEY idx_relation_source (source_batch_id) COMMENT '正向追溯（原料→成品）',
     KEY idx_relation_target (target_batch_id) COMMENT '反向追溯（成品→原料）',
     KEY idx_relation_order (production_order_id)
