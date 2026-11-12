@@ -34,6 +34,11 @@
     trace: clone(demo.trace),
     traceIsLive: false,
     quality: clone(demo.qualityQueue),
+    // 质检页独立加载状态（不复用工单列表的 sync，避免互相干扰）
+    inspectionLoading: false,
+    inspectionLoaded: false,
+    inspectionLoadError: '',
+    inspectionLoadAt: 0,
     defectStats: null,
     statusEvents: clone(demo.statusEvents),
     route: parseRoute(),
@@ -162,13 +167,18 @@
     INSPECTOR: ['task.inspect', 'inspection.create']
   };
 
-  // 侧栏模块可见性：登录后的第一屏就是该角色的工作面
+  // 侧栏模块可见性：登录后的第一屏就是该角色的工作面。
+  // 质检员只保留「工作台 / 质检任务 / 生产工单」：
+  //   - quality 是主工作面（待质检工单队列在这里）；
+  //   - orders 用于点进工单详情看质检记录，不能去掉；
+  //   - 其余（工序任务 / 库存 / 基础资料 / 批次追溯）与质检职责无关，直接剔除，
+  //     避免点进去看到「无权限」或空数据。
   const ROLE_VIEWS = {
     ADMIN: null,
     PLANNER: ['today', 'orders', 'tasks', 'materials', 'basic', 'trace'],
     WAREHOUSE: ['today', 'orders', 'materials', 'basic'],
     OPERATOR: ['today', 'tasks', 'orders'],
-    INSPECTOR: ['today', 'tasks', 'quality', 'trace']
+    INSPECTOR: ['today', 'quality', 'orders']
   };
 
   const ORDER_TARGET_PERMISSION = {
@@ -253,7 +263,10 @@
   }
 
   function firstAllowedView() {
-    const views = ['today', 'orders', 'tasks', 'materials', 'basic', 'quality', 'trace'];
+    // 质检员登录后直接落在「质检任务」工作面，其余角色保持原来的工作台优先。
+    const views = state.mode === 'live' && hasRole('INSPECTOR')
+      ? ['quality', 'today', 'orders', 'tasks', 'materials', 'basic', 'trace']
+      : ['today', 'orders', 'tasks', 'materials', 'basic', 'quality', 'trace'];
     return views.find(canView) || 'today';
   }
 
@@ -450,17 +463,40 @@
       || tasks[tasks.length - 1];
   }
 
+  // 终态工单：已关闭(7) / 已取消(8)。这类工单的工序任务已被作废（SKIPPED），
+  // 再点「质检放行」会因 getOrderDetail 报 NOT_FOUND 而提示「工单不存在」，属于白点。
+  // 全局统一用这个函数过滤，避免列表、首页、质检队列里出现点了也没用的行。
+  const CLOSED_ORDER_STATUSES = [7, 8];
+  function isActionableOrder(order) {
+    if (!order) return false;
+    if (order.archived) return false;
+    return !CLOSED_ORDER_STATUSES.includes(Number(order.status));
+  }
+
   // 首页随工单可切换的工单：只列未关闭 / 未取消的在制工单，排除仅用于趋势统计的历史归档单。
   // 顺序与「工单队列」一致，保证滑移方向与用户直觉相符。
   function switchableOrders() {
-    return state.orders.filter((order) => !order.archived && order.status !== 7 && order.status !== 8);
+    return state.orders.filter(isActionableOrder);
+  }
+
+  // live 模式的「待质检队列」：后端没有全局质检单列表接口，但工序任务在
+  // loadOrderPage → hydrateOrderTasks 已经拉到 state.tasksByOrder。
+  // 状态 6 = WAIT_INSPECTION（工序检完成、等待质检放行），只取有效工单下的任务。
+  // 这样质检员打开质检页就能看到「哪些工单要质检」，无需新增后端接口。
+  function liveInspectionQueue() {
+    if (state.mode !== 'live') return [];
+    return state.orders
+      .filter(isActionableOrder)
+      .flatMap((order) => (state.tasksByOrder[order.id] || [])
+        .filter((task) => Number(task.status) === 6)
+        .map((task) => ({ order, task })));
   }
 
   function activeOrder() {
     const switchable = switchableOrders();
     return switchable.find((order) => order.id === state.currentOrderId)
       || switchable[0]
-      || state.orders[0];
+      || null;
   }
 
   function findTask(taskId) {
@@ -721,6 +757,11 @@
     app.innerHTML = html;
     document.title = `${pageTitle(route)} · SmartMES`;
     updateRunningTimers();
+    // 质检页的数据来自独立的较大分页，进入时加载一次（内部有 10s 节流，
+    // 不会因 render 反复触发而刷接口）。
+    if (route.view === 'quality' && state.mode === 'live') {
+      loadInspectionQueue();
+    }
   }
 
   function pageTitle(route) {
@@ -1166,8 +1207,9 @@
   // 指标口径：不同计量单位不能相加（台 / 块 / 件混在一起没有业务含义），
   // 所以按 unit 分组统计，由调用方按单位展示；跨单位的比率类指标只在单一单位内计算。
   function calculateMetrics() {
-    // archived 是演示数据集里的历史完工工单，只用于趋势图，不计入今日 KPI
-    const scoped = state.orders.filter((order) => !order.archived);
+    // archived 是演示数据集里的历史完工工单，只用于趋势图，不计入今日 KPI；
+    // 已取消 / 已关闭工单同样是终态，不能计入计划产出。
+    const scoped = state.orders.filter(isActionableOrder);
     const groups = new Map();
     scoped.forEach((order) => {
       const unit = order.unit || '件';
@@ -1555,7 +1597,7 @@
     if (state.mode !== 'live') {
       const byProduct = new Map();
       state.orders
-        .filter((order) => !order.archived)
+        .filter(isActionableOrder)
         .forEach((order) => {
           const defect = Number(order.defectQuantity || 0);
           if (defect <= 0) return;
@@ -1813,10 +1855,13 @@
   }
 
   function buildDecisions() {
-    const waiting = state.orders.find((order) => tasksFor(order.id).some((task) => task.status === 6));
+    // 只从有效工单推导待办：已取消 / 已关闭工单的工序已作废，
+    // 不能再推出「去质检」这种点了会报「工单不存在」的提醒。
+    const actionableOrders = state.orders.filter(isActionableOrder);
+    const waiting = actionableOrders.find((order) => tasksFor(order.id).some((task) => task.status === 6));
     const waitingTask = waiting ? tasksFor(waiting.id).find((task) => task.status === 6) : null;
-    const ready = state.orders.find((order) => order.status === 2);
-    const paused = state.orders.find((order) => order.status === 5);
+    const ready = actionableOrders.find((order) => order.status === 2);
+    const paused = actionableOrders.find((order) => order.status === 5);
     const shortages = shortageMaterials();
     const decisions = [];
 
@@ -2023,7 +2068,9 @@
   }
 
   function filteredOrders() {
-    if (state.mode === 'live') return state.orders;
+    // live 模式也过滤掉已取消 / 已关闭工单：它们是终态，点进去做质检等操作
+    // 只会得到「工单不存在」。想查历史可用状态筛选配合后端分页，这里默认不展示。
+    if (state.mode === 'live') return state.orders.filter(isActionableOrder);
     const query = state.orderQuery.trim().toLowerCase();
     return state.orders.filter((order) => {
       const matchesQuery = !query
@@ -2522,8 +2569,11 @@
   }
 
   function allTasks() {
-    // 数据范围：车间操作工只列派给本人的工序
+    // 数据范围：车间操作工只列派给本人的工序。
+    // 同时排除已取消 / 已关闭工单：这些工单的工序已被作废（SKIPPED），
+    // 出现在列表里点了也没用（后端 getOrderDetail 会报「工单不存在」）。
     return state.orders
+      .filter(isActionableOrder)
       .flatMap((order) => tasksFor(order.id).map((task) => ({ ...task, order })))
       .filter(isMyTask);
   }
@@ -4627,17 +4677,22 @@
   }
 
   function renderQuality() {
-    const pending = state.quality.filter((item) => item.status === 'pending').length;
-    const passed = state.quality.filter((item) => item.status === 'passed').length;
-    const returned = state.quality.filter((item) => item.status === 'returned').length;
-    const inspected = state.quality.reduce((sum, item) => sum + Number(item.inspectionQuantity || 0), 0);
-    const qualified = state.quality.reduce((sum, item) => sum + Number(item.qualifiedQuantity || 0), 0);
+    const isLive = state.mode === 'live';
+    // live：真实待质检队列来自 state.tasksByOrder 里状态 6 的工序任务；
+    // demo：沿用演示数据集 state.quality。
+    const queue = isLive ? liveInspectionQueue() : null;
+    const pending = isLive ? queue.length : state.quality.filter((item) => item.status === 'pending').length;
+    const passed = isLive ? 0 : state.quality.filter((item) => item.status === 'passed').length;
+    const returned = isLive ? 0 : state.quality.filter((item) => item.status === 'returned').length;
+    const inspected = isLive ? 0 : state.quality.reduce((sum, item) => sum + Number(item.inspectionQuantity || 0), 0);
+    const qualified = isLive ? 0 : state.quality.reduce((sum, item) => sum + Number(item.qualifiedQuantity || 0), 0);
     const passRate = inspected ? (qualified / inspected) * 100 : 0;
-    const liveQualityUnavailable = state.mode === 'live';
     return `
-      ${pageHead('质检任务', '待质检工序需判定放行或退回返工，后道工序才会继续解锁。')}
-      ${mockNotice('下方检验队列来自演示数据集（Mock），网关未提供跨工单的质检单列表接口。')}
-      ${liveQualityUnavailable ? '' : `
+      ${pageHead('质检任务', isLive
+        ? '待质检工序需判定放行或退回返工，后道工序才会继续解锁；已取消 / 已关闭的工单不会出现在队列中。'
+        : '待质检工序需判定放行或退回返工，后道工序才会继续解锁。')}
+      ${isLive ? '' : mockNotice('下方检验队列来自演示数据集（Mock），网关未提供跨工单的质检单列表接口。')}
+      ${isLive ? '' : `
         <section class="quality-overview" aria-labelledby="quality-gate-title">
           <div class="quality-overview-head">
             <div>
@@ -4660,16 +4715,49 @@
       <div class="quality-grid">
         <section aria-labelledby="inspection-title">
           <div class="detail-section-title">
-            <h2 id="inspection-title">检验队列</h2>
-            <span>${liveQualityUnavailable ? '未接入真实数据' : `${pending} 条待判定`}</span>
+            <h2 id="inspection-title">${isLive ? '待质检工单' : '检验队列'}</h2>
+            <span>${isLive ? `${pending} 张工单待质检` : `${pending} 条待判定`}</span>
           </div>
-          ${liveQualityUnavailable ? `
-            <div class="empty-state">
-              <p>网关只提供按工单 <code>/inspection/order/{orderId}</code> 与按任务 <code>/inspection/task/{taskId}</code> 查询质检单，没有全局质检列表接口。</p>
-              <p>请在工单详情或工序任务抽屉中查看对应的检验记录。</p>
-              <a class="button primary" href="#/orders">前往生产工单 ${icon('arrow')}</a>
-            </div>
-          ` : `
+          ${isLive ? (
+            state.inspectionLoading && !queue.length
+              ? '<div class="empty-state"><p>正在读取待质检工单…</p></div>'
+              : state.inspectionLoadError && !queue.length
+                ? `<div class="empty-state">
+                     <p>待质检工单加载失败：${escapeHtml(state.inspectionLoadError)}</p>
+                     <button class="button small" type="button" data-action="reload-quality">重试</button>
+                   </div>`
+                : queue.length
+                  ? `<div class="inspection-stack">
+                      ${queue.map(({ order, task }) => `
+                        <article class="inspection-item is-pending">
+                          <div class="inspection-id">
+                            <strong>${escapeHtml(order.orderNo)}</strong>
+                            ${escapeHtml(order.productName || '')}
+                          </div>
+                          <div class="inspection-main">
+                            <h3>${escapeHtml(task.stepName || '质检点工序')} <span class="status-pill tone-caution">待质检</span></h3>
+                            <p>第 ${formatNumber(task.stepNo)} 道工序 · 计划 ${formatNumber(task.planQuantity)} / 已报 ${formatNumber(task.reportedQuantity)} · ${escapeHtml(task.workCenter || '')}</p>
+                            <p>工单状态：${escapeHtml(order.statusDesc || '')} · 工序报工完成，等待质检放行</p>
+                          </div>
+                          <div class="inspection-result">
+                            判定结果
+                            <strong>待录入</strong>
+                          </div>
+                          <div class="inspection-actions">
+                            <a class="button small" href="${routeHref('orders', order.id)}">查看工单</a>
+                            ${can('task.inspect') ? `
+                              <button class="button small danger" type="button" data-action="reject-task" data-task="${task.id}">退回返工</button>
+                              <button class="button small primary" type="button" data-action="pass-task" data-task="${task.id}">放行</button>
+                            ` : ''}
+                          </div>
+                        </article>
+                      `).join('')}
+                    </div>`
+                  : `<div class="empty-state">
+                       <p>当前没有待质检的工单。工序报工完成后，质检点工序会进入「待质检」并出现在这里。</p>
+                       <button class="button small" type="button" data-action="reload-quality">刷新</button>
+                     </div>`
+          ) : `
           <div class="inspection-stack">
             ${state.quality.map((item) => {
               const task = item.taskId ? findTask(item.taskId) : null;
@@ -4715,6 +4803,12 @@
             <h3>质量门禁</h3>
             <p>标记为质检点的工序（如老化测试、ICT 测试）未放行时，后道工序无法开始。门禁由任务状态 6「待质检」实现。</p>
           </section>
+          ${isLive ? `
+            <section class="quality-note">
+              <h3>数据来源</h3>
+              <p>网关没有跨工单的质检单列表接口，此处由「生产工单 → 工序任务」中状态为「待质检」的任务实时汇总；已取消 / 已关闭工单的作废工序已自动排除。</p>
+            </section>
+          ` : ''}
         </aside>
       </div>
     `;
@@ -5201,6 +5295,39 @@
     });
   }
 
+  // 质检队列专用：state.orders 只是工单列表的「当前分页」，直接从中找待检工序会漏。
+  // 这里单独拉一页较大工单 + 并行取详情，只把任务写进 state.tasksByOrder，
+  // 不覆盖 state.orders / ordersPage，避免打乱工单列表的分页状态。
+  // 终态工单（已取消 / 已关闭）不取详情，后端对它们可能返回 NOT_FOUND。
+  async function loadInspectionQueue(force = false) {
+    if (state.mode !== 'live') return;
+    // 节流：render() 会被频繁调用，避免每次重绘都打接口
+    if (!force && Date.now() - (state.inspectionLoadAt || 0) < 10000) return;
+    if (state.inspectionLoading) return;
+    state.inspectionLoadAt = Date.now();
+    state.inspectionLoading = true;
+    render();
+    try {
+      const result = await api.pageOrders({ current: 1, size: 50 });
+      const orders = (result.records || []).filter(isActionableOrder)
+        .filter((order) => [3, 4, 5, 6].includes(Number(order.status)));
+      const settled = await Promise.allSettled(orders.map((order) => api.getOrderDetail(order.id)));
+      settled.forEach((res, index) => {
+        if (res.status !== 'fulfilled' || !res.value) return;
+        const order = orders[index];
+        if (res.value.tasks) state.tasksByOrder[order.id] = res.value.tasks;
+        if (res.value.statusLogs) state.statusEvents[order.id] = res.value.statusLogs;
+      });
+      state.inspectionLoaded = true;
+      state.inspectionLoadError = '';
+    } catch (error) {
+      state.inspectionLoadError = error.message || '待质检工单加载失败';
+    } finally {
+      state.inspectionLoading = false;
+      render();
+    }
+  }
+
   async function loadOrderStatusCounts() {
     try {
       const stats = await api.orderStatusStats();
@@ -5331,6 +5458,10 @@
 
   async function refreshOrderDetail(orderId) {
     if (state.mode !== 'live') return;
+    // 已取消 / 已关闭的工单不再刷详情：后端 getOrderDetail 对终态工单可能
+    // 返回 NOT_FOUND（「工单不存在」），白白弹一个错误提示。
+    const existing = findOrder(orderId);
+    if (existing && !isActionableOrder(existing)) return;
     state.loadingOrder = Number(orderId);
     render();
     try {
@@ -5589,6 +5720,13 @@
       showToast('没有找到工序任务。', 'error');
       return;
     }
+    // 终态工单（已取消 / 已关闭）的工序已被作废，放行/退回会导致后端
+    // getOrderDetail 报「工单不存在」。这里提前拦住，给出可理解的提示。
+    const parentOrder = findOrder(task.orderId);
+    if (parentOrder && !isActionableOrder(parentOrder)) {
+      showToast('该工单已取消或已关闭，工序已作废，无法执行质检操作。', 'warning');
+      return;
+    }
     if (action === 'start' && !canTaskStart(task)) {
       showToast('前道工序尚未完成，后道不能开始。', 'warning');
       return;
@@ -5603,6 +5741,10 @@
           if (action === 'start') markOrderStarted(order);
         }
         await refreshOrderDetail(task.orderId);
+        // 质检放行 / 退回后队列会少一条，强制重载待质检列表，避免页面停留旧数据
+        if (action === 'pass' || action === 'reject') {
+          await loadInspectionQueue(true);
+        }
         message = {
           start: '工序已开始',
           pause: '工序已暂停',
@@ -5872,6 +6014,12 @@
     closeModal();
     try {
       await refreshLiveData();
+      // 登录后落到该角色的工作面：质检员直接进「质检任务」，
+      // 避免停在今天视图还要自己点侧栏。深链接（如 #/orders/5）不打断。
+      const target = firstAllowedView();
+      if (target !== 'today' && parseRoute().view === 'today') {
+        window.location.hash = `#/${target}`;
+      }
       showToast('网关已连接，正在读取真实工单。');
     } catch (error) {
       if (api.isLive()) {
@@ -5893,6 +6041,10 @@
     state.trace = clone(demo.trace);
     state.traceIsLive = false;
     state.quality = clone(demo.qualityQueue);
+    state.inspectionLoading = false;
+    state.inspectionLoaded = false;
+    state.inspectionLoadError = '';
+    state.inspectionLoadAt = 0;
     state.defectStats = null;
     state.statusEvents = clone(demo.statusEvents);
     state.currentOrderId = 1;
@@ -6128,6 +6280,9 @@
         break;
       case 'create-order':
         openCreateOrderModal();
+        break;
+      case 'reload-quality':
+        loadInspectionQueue(true);
         break;
       case 'create-product':
         openProductModal();
