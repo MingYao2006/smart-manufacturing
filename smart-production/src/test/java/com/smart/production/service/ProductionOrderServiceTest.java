@@ -11,6 +11,7 @@ import com.smart.production.mapper.ProductionPlanMapper;
 import com.smart.production.mapper.WorkTaskMapper;
 import com.smart.production.statemachine.ProductionOrderStatus;
 import com.smart.production.support.FakeProductCatalog;
+import com.smart.production.support.FakeUserRoles;
 import com.smart.production.support.Stub;
 import com.smart.production.support.Stub.Recorder;
 import org.junit.jupiter.api.BeforeEach;
@@ -68,7 +69,7 @@ class ProductionOrderServiceTest {
         statusLogMapper = Recorder.of(OrderStatusLogMapper.class,
                 Stub.rule("insert", 1, Stub.returnsInt(1)));
 
-        WorkTaskService workTaskService = new WorkTaskService(workTaskMapper.proxy(), productCatalog);
+        WorkTaskService workTaskService = new WorkTaskService(workTaskMapper.proxy(), productCatalog, FakeUserRoles.defaults());
         orderService = new ProductionOrderService(orderMapper.proxy(), planMapper.proxy(),
                 workTaskMapper.proxy(), statusLogMapper.proxy(), productCatalog, workTaskService);
     }
@@ -139,7 +140,7 @@ class ProductionOrderServiceTest {
     @DisplayName("产品停用 → 拒绝创建工单")
     void testCreateOrderProductDisabled() {
         productCatalog.withDisabledProduct();
-        WorkTaskService wts = new WorkTaskService(workTaskMapper.proxy(), productCatalog);
+        WorkTaskService wts = new WorkTaskService(workTaskMapper.proxy(), productCatalog, FakeUserRoles.defaults());
         orderService = new ProductionOrderService(orderMapper.proxy(), planMapper.proxy(),
                 workTaskMapper.proxy(), statusLogMapper.proxy(), productCatalog, wts);
 
@@ -153,7 +154,7 @@ class ProductionOrderServiceTest {
     @DisplayName("产品无生效 BOM → 拒绝创建（BOM_NOT_EFFECTIVE 40908）")
     void testCreateOrderNoActiveBom() {
         productCatalog.withoutBom();
-        WorkTaskService wts = new WorkTaskService(workTaskMapper.proxy(), productCatalog);
+        WorkTaskService wts = new WorkTaskService(workTaskMapper.proxy(), productCatalog, FakeUserRoles.defaults());
         orderService = new ProductionOrderService(orderMapper.proxy(), planMapper.proxy(),
                 workTaskMapper.proxy(), statusLogMapper.proxy(), productCatalog, wts);
 
@@ -168,7 +169,7 @@ class ProductionOrderServiceTest {
     @DisplayName("产品无生效工艺路线 → 拒绝创建（ROUTE_NOT_EFFECTIVE 40909）")
     void testCreateOrderNoActiveRoute() {
         productCatalog.withoutRoute();
-        WorkTaskService wts = new WorkTaskService(workTaskMapper.proxy(), productCatalog);
+        WorkTaskService wts = new WorkTaskService(workTaskMapper.proxy(), productCatalog, FakeUserRoles.defaults());
         orderService = new ProductionOrderService(orderMapper.proxy(), planMapper.proxy(),
                 workTaskMapper.proxy(), statusLogMapper.proxy(), productCatalog, wts);
 
@@ -212,7 +213,7 @@ class ProductionOrderServiceTest {
      * 用当前的 orderMapper 重新装配服务（保持其它依赖不变）。
      */
     private void rebuildService() {
-        WorkTaskService wts = new WorkTaskService(workTaskMapper.proxy(), productCatalog);
+        WorkTaskService wts = new WorkTaskService(workTaskMapper.proxy(), productCatalog, FakeUserRoles.defaults());
         orderService = new ProductionOrderService(orderMapper.proxy(), planMapper.proxy(),
                 workTaskMapper.proxy(), statusLogMapper.proxy(), productCatalog, wts);
     }

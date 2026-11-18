@@ -69,6 +69,9 @@
         method: options.method || 'GET',
         headers,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        // 所有接口都是动态业务数据：禁用 HTTP 缓存，否则状态统计等聚合接口
+        // 在一次写操作后可能仍命中旧响应，看板看起来「没有实时变化」。
+        cache: 'no-store',
         signal: controller.signal
       });
 
@@ -122,6 +125,10 @@
   }
   const getUser = (id) => get(`${SYS}/user/${id}`);
   const listUsers = () => get(`${SYS}/user/list`);
+  // 角色权限矩阵：后端下发的「角色→可见模块 / 权限」唯一真源。
+  // 未登录也能拉（网关白名单），所以 auth:false，避免无 token 时被清会话。
+  const getPermissionMatrix = () =>
+    get(`${SYS}/auth/permissions`, undefined, { auth: false });
 
   /* ==================== 生产工单 ==================== */
 
@@ -191,6 +198,15 @@
   const listIssuesByOrder = (orderId) => get(`${INV}/issue/order/${orderId}`);
   const listIssueItems = (issueId) => get(`${INV}/issue/${issueId}/items`);
   const listTransactionsByBizNo = (bizNo) => get(`${INV}/transaction/biz`, { bizNo });
+
+  /* ==================== 进货审批（仓管申请 / 管理员·计划员或签） ==================== */
+
+  const listPurchaseApprovals = (status) => get(`${INV}/purchase/list`, status == null ? {} : { status });
+  const getPurchaseApproval = (id) => get(`${INV}/purchase/${id}`);
+  const createPurchaseApproval = (payload) => post(`${INV}/purchase`, payload);
+  const approvePurchaseApproval = (id, payload) => post(`${INV}/purchase/${id}/approve`, payload || {});
+  const rejectPurchaseApproval = (id, payload) => post(`${INV}/purchase/${id}/reject`, payload || {});
+  const cancelPurchaseApproval = (id) => post(`${INV}/purchase/${id}/cancel`);
 
   /* ==================== 基础资料 ==================== */
 
@@ -267,12 +283,17 @@
   window.MES_API = {
     state,
     isLive: () => Boolean(state.token),
+    // 供「切换账号」使用：登录失败时把上一个账号的会话原样还原，
+    // 避免一次输错密码就把当前有效的登录状态清掉。
+    getAuth: () => ({ token: state.token, user: state.user }),
+    setAuth,
     request,
     login,
     logout: clearAuth,
     ping,
     getUser,
     listUsers,
+    getPermissionMatrix,
 
     pageOrders,
     listOrders,
@@ -309,6 +330,13 @@
     listIssuesByOrder,
     listIssueItems,
     listTransactionsByBizNo,
+
+    listPurchaseApprovals,
+    getPurchaseApproval,
+    createPurchaseApproval,
+    approvePurchaseApproval,
+    rejectPurchaseApproval,
+    cancelPurchaseApproval,
 
     pageProducts,
     pageMaterials,

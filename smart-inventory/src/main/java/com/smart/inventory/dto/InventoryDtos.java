@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -261,5 +262,90 @@ public final class InventoryDtos {
         private boolean enough;
         @Schema(description = "缺口数量（充足时为 0）")
         private BigDecimal shortage;
+    }
+
+    /* ==================== 进货审批单（补料申请） ==================== */
+
+    @Data
+    @Schema(description = "进货审批单创建请求（仓管提交）")
+    public static class PurchaseRequestCreateDTO {
+
+        @NotNull(message = "物料 ID 不能为空")
+        @Schema(description = "申请进货的物料 ID", requiredMode = Schema.RequiredMode.REQUIRED)
+        private Long materialId;
+
+        @Schema(description = "物料编码（可选，服务端以库存档案为准补全）")
+        private String materialCode;
+
+        @Schema(description = "物料名称（可选，服务端以库存档案为准补全）")
+        private String materialName;
+
+        @Schema(description = "仓库 ID，不传默认 1")
+        private Long warehouseId;
+
+        @NotNull(message = "进货数量不能为空")
+        @DecimalMin(value = "0.0001", message = "进货数量必须大于 0")
+        @Schema(description = "申请进货数量", example = "500", requiredMode = Schema.RequiredMode.REQUIRED)
+        private BigDecimal quantity;
+
+        @Schema(description = "入库批次号，不传则审批通过时自动生成")
+        private String batchNo;
+
+        @Schema(description = "申请原因（如低于安全库存）")
+        private String reason;
+
+        @Schema(description = "供应商（选填）")
+        private String supplierName;
+    }
+
+    @Data
+    @Schema(description = "进货审批动作（通过 / 驳回 / 撤销）")
+    public static class PurchaseApproveDTO {
+
+        @Schema(description = "审批意见（驳回时建议填写）", example = "同意补料")
+        private String comment;
+    }
+
+    @Data
+    @Schema(description = "进货审批单视图")
+    public static class PurchaseRequestVO {
+        private Long id;
+        private String requestNo;
+        private Long materialId;
+        private String materialCode;
+        private String materialName;
+        private String unit;
+        private Long warehouseId;
+        private BigDecimal quantity;
+        private String batchNo;
+        private String reason;
+        private String supplierName;
+        private Integer status;
+        private String statusDesc;
+        private Long applicantId;
+        private String applicantName;
+        private String applicantRole;
+        private Long approverId;
+        private String approverName;
+        private String approverRole;
+        private String approveComment;
+        private LocalDateTime approveTime;
+        private Long inboundTxId;
+        private LocalDateTime createTime;
+        private LocalDateTime updateTime;
+    }
+
+    @Data
+    @Schema(description = "审批通过结果（含入库后的库存快照）")
+    public static class PurchaseApproveResultVO {
+        private Long requestId;
+        private String requestNo;
+        private Integer status;
+        private String statusDesc;
+        @Schema(description = "审批通过时自动入库写入的流水 ID")
+        private Long inboundTxId;
+        @Schema(description = "入库后的库存三量快照，前端据此刷新库存态势")
+        private InventoryVO inventory;
+        private String message;
     }
 }

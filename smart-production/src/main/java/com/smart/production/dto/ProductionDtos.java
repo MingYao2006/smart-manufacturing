@@ -56,6 +56,14 @@ public final class ProductionDtos {
         @Schema(description = "生产什么产品", example = "1", requiredMode = Schema.RequiredMode.REQUIRED)
         private Long productId;
 
+        /**
+         * 计划员可自定义本工单显示的产品名称。
+         * 后端仍用 productId 校验产品启用状态、锁定生效 BOM 与工艺路线，
+         * 这里只覆盖写入工单的 productName 快照；不传则用产品档案里的名称。
+         */
+        @Schema(description = "自定义产品名称（可选，不传则用产品档案名称）", example = "智能电表 X1（客户定制）")
+        private String productName;
+
         @NotNull(message = "计划数量不能为空")
         @DecimalMin(value = "0.0001", message = "计划数量必须大于 0")
         @Schema(description = "计划生产数量", example = "100", requiredMode = Schema.RequiredMode.REQUIRED)

@@ -2,7 +2,7 @@
 -- 03 · 库存库 smart_inventory
 -- 表：material_inventory / inventory_transaction / material_reservation
 --     / material_issue / material_issue_item / material_issue_outbox
---     / inventory_reconcile_log
+--     / inventory_reconcile_log / purchase_request
 -- =====================================================================
 
 USE smart_inventory;
@@ -214,3 +214,44 @@ CREATE TABLE inventory_reconcile_log (
     KEY idx_reconcile_material (material_id, warehouse_id),
     KEY idx_reconcile_status (handle_status)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='库存对账日志';
+
+-- ---------------------------------------------------------------------
+-- 进货审批单（补料申请）：仓管发现库存不够时自己申请，管理员 / 计划员审批。
+--
+-- 🔑 或签口径：管理员或计划员任意一人审批通过，单据即变为「已通过」，
+--    并在同一事务内自动入库（+quantity）→ 可用量随之变化 → 库存态势刷新。
+-- 🔑 approve_state 是并发闸门：条件更新
+--       UPDATE ... SET status=2 WHERE id=? AND status=1
+--    只有第一个审批请求能把 1→2，重复审批影响行数=0 直接拒绝，
+--    保证「审批通过」与「入库」只发生一次，不会重复加库存。
+-- ---------------------------------------------------------------------
+DROP TABLE IF EXISTS purchase_request;
+CREATE TABLE purchase_request (
+    id              BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
+    request_no      VARCHAR(64)   NOT NULL COMMENT '进货审批单号（PR+日期+序列）',
+    material_id     BIGINT        NOT NULL COMMENT '申请进货的物料',
+    material_code   VARCHAR(64)            DEFAULT NULL COMMENT '物料编码快照',
+    material_name   VARCHAR(128)           DEFAULT NULL COMMENT '物料名称快照',
+    unit            VARCHAR(16)            DEFAULT NULL COMMENT '单位快照',
+    warehouse_id    BIGINT        NOT NULL DEFAULT 1 COMMENT '入库仓库',
+    quantity        DECIMAL(18,4) NOT NULL COMMENT '申请进货数量（>0）',
+    batch_no        VARCHAR(64)            DEFAULT NULL COMMENT '入库批次号；为空时审批通过由服务端生成',
+    reason          VARCHAR(500)           DEFAULT NULL COMMENT '申请原因（如低于安全库存）',
+    supplier_name   VARCHAR(128)           DEFAULT NULL COMMENT '供应商（选填）',
+    status          TINYINT       NOT NULL DEFAULT 1 COMMENT '1-待审批 2-已通过(已入库) 3-已驳回 4-已撤销',
+    applicant_id    BIGINT                 DEFAULT NULL COMMENT '申请人（仓管）ID',
+    applicant_name  VARCHAR(64)            DEFAULT NULL COMMENT '申请人姓名快照',
+    applicant_role  VARCHAR(32)            DEFAULT NULL COMMENT '申请人角色快照',
+    approver_id     BIGINT                 DEFAULT NULL COMMENT '审批人 ID',
+    approver_name   VARCHAR(64)            DEFAULT NULL COMMENT '审批人姓名快照',
+    approver_role   VARCHAR(32)            DEFAULT NULL COMMENT '审批人角色（ADMIN / PLANNER）',
+    approve_comment VARCHAR(500)           DEFAULT NULL COMMENT '审批意见',
+    approve_time    DATETIME               DEFAULT NULL COMMENT '审批时间',
+    inbound_tx_id   BIGINT                 DEFAULT NULL COMMENT '审批通过时写入的库存流水 ID（审计链路）',
+    create_time     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_purchase_request_no (request_no),
+    KEY idx_purchase_status (status, create_time),
+    KEY idx_purchase_material (material_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT ='进货审批单（仓管申请，管理员/计划员或签审批，通过自动入库）';

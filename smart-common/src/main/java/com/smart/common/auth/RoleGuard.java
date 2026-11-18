@@ -108,7 +108,10 @@ public final class RoleGuard {
         }
     }
 
-    private static String roleLabel(String role) {
+    /**
+     * 角色编码 → 中文名（公开，供派工目标角色校验等场景拼提示语）。
+     */
+    public static String roleLabel(String role) {
         return switch (role) {
             case PLANNER -> "生产计划员";
             case WAREHOUSE -> "仓库管理员";

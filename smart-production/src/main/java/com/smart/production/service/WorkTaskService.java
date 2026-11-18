@@ -45,6 +45,7 @@ public class WorkTaskService {
 
     private final WorkTaskMapper workTaskMapper;
     private final ProductCatalogClient productClient;
+    private final UserRoleLookup userRoleClient;
 
     /* ==================== 生成工序任务（幂等） ==================== */
 
@@ -144,7 +145,30 @@ public class WorkTaskService {
     @Transactional(rollbackFor = Exception.class)
     public WorkTaskVO dispatch(Long taskId, DispatchDTO dto) {
         RoleGuard.require("派工（指定操作工与工作中心）只允许生产计划员执行", RoleGuard.PLANNER);
-        getTask(taskId);
+        WorkTask task = getTask(taskId);
+        // 🔑 派工目标角色校验：直接调接口就能绕过前端，所以必须在服务端强制。
+        //  - 质检点工序（is_inspection=1）只能派给质检员（INSPECTOR）
+        //  - 普通工序只能派给车间操作工（OPERATOR）
+        //  - 系统管理员（ADMIN）可兜底接收任意派工，方便临时顶岗
+        //  - 计划员不能把工序派给自己（职责分离）
+        if (dto.getOperatorId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择被委派的操作工");
+        }
+        List<String> targetRoles = userRoleClient.getRoles(dto.getOperatorId());
+        boolean isInspectionTask = task.getIsInspection() != null && task.getIsInspection() == 1;
+        String requiredRole = isInspectionTask ? RoleGuard.INSPECTOR : RoleGuard.OPERATOR;
+        boolean allowed = targetRoles.contains(RoleGuard.ADMIN)
+                || targetRoles.contains(requiredRole);
+        if (!allowed) {
+            String requiredLabel = isInspectionTask ? "质检员" : "车间操作工";
+            String actualLabel = targetRoles.stream()
+                    .map(RoleGuard::roleLabel).distinct().toList().toString();
+            throw new BusinessException(ErrorCode.FORBIDDEN,
+                    "该工序只能委派给" + requiredLabel + "，而所选用户角色为" + actualLabel);
+        }
+        if (targetRoles.contains(RoleGuard.PLANNER) && !targetRoles.contains(RoleGuard.ADMIN)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "不能将工序派给生产计划员本人");
+        }
         workTaskMapper.dispatch(taskId, dto.getOperatorId(), dto.getOperatorName(), dto.getWorkCenter());
         log.info("[派工] taskId={} operator={} center={}", taskId, dto.getOperatorName(), dto.getWorkCenter());
         return toVO(getTask(taskId));
@@ -153,12 +177,21 @@ public class WorkTaskService {
     /* ==================== 工序状态流转 + 顺序约束 ==================== */
 
     /**
-     * 工序执行权限：车间操作工（ADMIN 由 RoleGuard 内部放行），
-     * 且操作工只能动<b>派给本人</b>的工序——未派工就不能自己抢工，也不能替别人报工。
+     * 工序执行权限：车间操作工或质检员（ADMIN 由 RoleGuard 内部放行）。
+     *
+     * <p>为什么质检员也要能执行：质检点工序（{@code is_inspection=1}，如「老化测试」）
+     * 常由计划员直接派给质检员，若这里只放行 OPERATOR，派给质检员的工序就没人能开始 /
+     * 完成，只能退回重派。质检点完成后仍进入 WAIT_INSPECTION，放行 / 退回照样由
+     * {@link #requireInspector()} 把关，职责没有被削弱。
+     *
+     * <p>操作工与质检员都只能动<b>派给本人</b>的工序——未派工就不能自己抢工，
+     * 也不能替别人报工。
      */
     private void requireExecutor(WorkTask task) {
-        RoleGuard.require("工序的开始/暂停/恢复/完成只允许车间操作工执行", RoleGuard.OPERATOR);
-        if (RoleGuard.OPERATOR.equals(RoleGuard.currentRoleOrNull())) {
+        RoleGuard.require("工序的开始/暂停/恢复/完成只允许车间操作工或质检员执行",
+                RoleGuard.OPERATOR, RoleGuard.INSPECTOR);
+        String role = RoleGuard.currentRoleOrNull();
+        if (RoleGuard.OPERATOR.equals(role) || RoleGuard.INSPECTOR.equals(role)) {
             RoleGuard.requireSelf(task.getOperatorId(), "只能操作派给本人的工序，请先由计划员派工");
         }
     }

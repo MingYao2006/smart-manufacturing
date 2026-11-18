@@ -183,6 +183,19 @@ svg {
   align-items: center;
   white-space: nowrap;}
 
+/*
+ * 导航项按角色隐藏时，JS 只设置 hidden 属性；而上面这些规则用了 display:flex，
+ * 优先级高于 UA 默认的 [hidden]{display:none}，会导致「没有权限的模块依然显示在侧栏」。
+ * 这里统一兜底，保证 hidden 一定生效（含侧栏分组标题、移动端底栏与更多菜单）。
+ */
+.rail-nav a[hidden],
+.rail-nav .rail-group[hidden],
+.mobile-nav a[hidden],
+.mobile-more-trigger[hidden],
+.mobile-more-menu a[hidden] {
+  display: none !important;
+}
+
 .rail-nav svg,
 .mobile-nav svg {
   width: 18px;
@@ -2013,6 +2026,7 @@ body.rail-collapsed .workbench {
 
 .form-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 22px;
@@ -7137,23 +7151,23 @@ html {
   background: var(--board);
 }
 
-/* ---------- 页面整体背景：车间实景图（原图直铺，不裁剪、不模糊） ----------
+/* ---------- 页面整体背景：智能车间实景图 ----------
    两个踩过的坑记在这里：
    1. 背景**不要**用 body::before + z-index:-1：按 CSS 绘制顺序，body 自身的不透明
       background-color 排在负 z-index 子层之后，会把整层盖掉（表现为"背景没了"）。
       所以直接放在 body 的 background-image 上。
-   2. 原图左上角带 SmartMES 的 S 形标识（无可读文字）。不裁剪时它会从页面标题、卡片
-      间隙里透出来 —— 这是原图直铺的固有代价，用很轻的浅色薄纱压一压，只求不抢读，
-      不追求把图糊掉。 */
+   2. 这张实景图整体偏亮蓝、对比度高，直接铺会压不住白色卡片上的文字，
+       所以用一层稍厚的浅色薄纱做"磨砂玻璃"底，只求不抢读，不把图糊掉。
+   图片已压成 WebP（1672x941 / 约 47KB），随静态包一起发布。 */
 
 body {
   background-color: var(--board);
   background-image:
     linear-gradient(180deg,
-      rgba(245, 247, 251, 0.14) 0%,
-      rgba(240, 245, 252, 0.22) 60%,
-      rgba(238, 243, 251, 0.30) 100%),
-    url("./assets/app-bg.png");
+      rgba(243, 247, 252, 0.34) 0%,
+      rgba(238, 244, 252, 0.44) 55%,
+      rgba(233, 241, 251, 0.52) 100%),
+    url("./assets/factory-bg.webp");
   background-position: center, center;
   background-size: cover, cover;
   background-repeat: no-repeat, no-repeat;
@@ -7889,6 +7903,31 @@ body {
   line-height: 1.5;
 }
 
+/* 待办信息整条可点：点击后跳到对应侧栏模块 */
+.decision-main {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+}
+
+.decision-main:hover strong {
+  color: var(--accent);
+}
+
+.decision-main:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.decision-detail {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .decision-action {
   display: inline-flex;
   align-items: center;
@@ -8491,6 +8530,21 @@ body {
 
 .wo-tab.is-risk .wo-dot {
   background: #fb7185;
+}
+
+/* 卡片数据来源说明（#11）：明确「只读快照」，避免误以为进度会随点击变化 */
+.traveler-source-note {
+  position: relative;
+  z-index: 2;
+  margin: 0;
+  padding: 0 clamp(24px, 3.2vw, 42px) 8px;
+  color: var(--on-dark-3);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  opacity: 0.82;
+}
+.traveler-source-note.is-live {
+  color: #7fd3a8;
 }
 
 .traveler-tabs-count {

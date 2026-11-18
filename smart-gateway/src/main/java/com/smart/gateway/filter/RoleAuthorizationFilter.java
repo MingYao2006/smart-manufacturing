@@ -64,14 +64,18 @@ public class RoleAuthorizationFilter implements GlobalFilter, Ordered {
             new Rule(HttpMethod.POST, "/production-service/order/repair-stuck", Set.of()),
 
             // ---------- 生产：工序与报工 ----------
+            // 工序执行放行「操作工 + 质检员」：质检点工序（如老化测试）常由计划员
+            // 直接派给质检员，只放行 OPERATOR 会派了没人能执行。
+            // 「只能动派给本人的工序」由 smart-production 的 WorkTaskService#requireExecutor 判，
+            // 放行 / 退回仍只有质检员能做（pass-inspection / reject-inspection）。
             new Rule(HttpMethod.POST, "/production-service/work-task/*/dispatch", Set.of("PLANNER")),
-            new Rule(HttpMethod.POST, "/production-service/work-task/*/start", Set.of("OPERATOR")),
-            new Rule(HttpMethod.POST, "/production-service/work-task/*/pause", Set.of("OPERATOR")),
-            new Rule(HttpMethod.POST, "/production-service/work-task/*/resume", Set.of("OPERATOR")),
-            new Rule(HttpMethod.POST, "/production-service/work-task/*/complete", Set.of("OPERATOR")),
+            new Rule(HttpMethod.POST, "/production-service/work-task/*/start", Set.of("OPERATOR", "INSPECTOR")),
+            new Rule(HttpMethod.POST, "/production-service/work-task/*/pause", Set.of("OPERATOR", "INSPECTOR")),
+            new Rule(HttpMethod.POST, "/production-service/work-task/*/resume", Set.of("OPERATOR", "INSPECTOR")),
+            new Rule(HttpMethod.POST, "/production-service/work-task/*/complete", Set.of("OPERATOR", "INSPECTOR")),
             new Rule(HttpMethod.POST, "/production-service/work-task/*/pass-inspection", Set.of("INSPECTOR")),
             new Rule(HttpMethod.POST, "/production-service/work-task/*/reject-inspection", Set.of("INSPECTOR")),
-            new Rule(HttpMethod.POST, "/production-service/report", Set.of("OPERATOR")),
+            new Rule(HttpMethod.POST, "/production-service/report", Set.of("OPERATOR", "INSPECTOR")),
 
             // ---------- 生产：计划单 ----------
             new Rule(HttpMethod.POST, "/production-service/plan", Set.of("PLANNER")),
@@ -82,18 +86,20 @@ public class RoleAuthorizationFilter implements GlobalFilter, Ordered {
             new Rule(HttpMethod.POST, "/production-service/mq/**", Set.of()),
 
             // ---------- 基础资料：只有管理员能改主数据 ----------
-            new Rule(HttpMethod.POST, "/product-service/product", Set.of()),
-            new Rule(HttpMethod.PUT, "/product-service/product/*", Set.of()),
-            new Rule(HttpMethod.DELETE, "/product-service/product/*", Set.of()),
-            new Rule(HttpMethod.POST, "/product-service/material", Set.of()),
-            new Rule(HttpMethod.PUT, "/product-service/material/*", Set.of()),
-            new Rule(HttpMethod.DELETE, "/product-service/material/*", Set.of()),
-            new Rule(HttpMethod.POST, "/product-service/bom", Set.of()),
-            new Rule(HttpMethod.POST, "/product-service/bom/*/activate", Set.of()),
-            new Rule(HttpMethod.DELETE, "/product-service/bom/*", Set.of()),
-            new Rule(HttpMethod.POST, "/product-service/route", Set.of()),
-            new Rule(HttpMethod.POST, "/product-service/route/*/activate", Set.of()),
-            new Rule(HttpMethod.DELETE, "/product-service/route/*", Set.of()),
+            // 与前端 basic.write（仅 ADMIN）保持一致：网关这一层原本是 Set.of()（对所有已登录角色放行），
+            // 属于越权口子，这里收口为 ADMIN，防止接口绕过前端隐藏的按钮。
+            new Rule(HttpMethod.POST, "/product-service/product", Set.of("ADMIN")),
+            new Rule(HttpMethod.PUT, "/product-service/product/*", Set.of("ADMIN")),
+            new Rule(HttpMethod.DELETE, "/product-service/product/*", Set.of("ADMIN")),
+            new Rule(HttpMethod.POST, "/product-service/material", Set.of("ADMIN")),
+            new Rule(HttpMethod.PUT, "/product-service/material/*", Set.of("ADMIN")),
+            new Rule(HttpMethod.DELETE, "/product-service/material/*", Set.of("ADMIN")),
+            new Rule(HttpMethod.POST, "/product-service/bom", Set.of("ADMIN")),
+            new Rule(HttpMethod.POST, "/product-service/bom/*/activate", Set.of("ADMIN")),
+            new Rule(HttpMethod.DELETE, "/product-service/bom/*", Set.of("ADMIN")),
+            new Rule(HttpMethod.POST, "/product-service/route", Set.of("ADMIN")),
+            new Rule(HttpMethod.POST, "/product-service/route/*/activate", Set.of("ADMIN")),
+            new Rule(HttpMethod.DELETE, "/product-service/route/*", Set.of("ADMIN")),
 
             // ---------- 库存 ----------
             new Rule(HttpMethod.POST, "/inventory-service/inventory/inbound", Set.of("WAREHOUSE")),
@@ -102,6 +108,13 @@ public class RoleAuthorizationFilter implements GlobalFilter, Ordered {
             new Rule(HttpMethod.POST, "/inventory-service/reservation/release/*", Set.of("PLANNER", "WAREHOUSE")),
             new Rule(HttpMethod.POST, "/inventory-service/issue", Set.of("WAREHOUSE")),
             new Rule(HttpMethod.POST, "/inventory-service/issue/return", Set.of("WAREHOUSE")),
+
+            // ---------- 库存：进货审批单（仓管申请，管理员/计划员或签） ----------
+            // 提交 / 撤销只允许仓库管理员；审批（通过/驳回）管理员或计划员任一人即可，ADMIN 统一放行。
+            new Rule(HttpMethod.POST, "/inventory-service/purchase", Set.of("WAREHOUSE")),
+            new Rule(HttpMethod.POST, "/inventory-service/purchase/*/approve", Set.of("PLANNER")),
+            new Rule(HttpMethod.POST, "/inventory-service/purchase/*/reject", Set.of("PLANNER")),
+            new Rule(HttpMethod.POST, "/inventory-service/purchase/*/cancel", Set.of("WAREHOUSE")),
 
             // ---------- 质量 ----------
             new Rule(HttpMethod.POST, "/quality-service/inspection", Set.of("INSPECTOR")),

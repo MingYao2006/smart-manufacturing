@@ -384,6 +384,39 @@ public class InventoryService {
                                Long warehouseId, Long operatorId, String operatorName,
                                String remark) {
         RoleGuard.require("物料入库只允许仓库管理员执行", RoleGuard.WAREHOUSE);
+        return applyInbound(materialId, quantity, batchNo, warehouseId, operatorId,
+                operatorName, "入库", bnOrGenerated(batchNo), remark, null);
+    }
+
+    /**
+     * 进货审批通过后的自动入库入口（供 PurchaseApprovalService 在同一事务内调用）。
+     *
+     * <p>与 {@link #inbound} 的区别：审批人是管理员 / 计划员（或签），不是仓库管理员，
+     * 因此这里<b>不做 WAREHOUSE 角色闸门</b>——权限已在审批动作处校验。入库逻辑本身一致：
+     * 条件更新加库存、写一条入库流水、返回最新三量快照。
+     *
+     * @return 入库后的库存快照视图（前端据此刷新库存态势）
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public InventoryVO applyApprovedInbound(Long materialId, BigDecimal quantity, String batchNo,
+                                            Long warehouseId, Long operatorId, String operatorName,
+                                            String requestNo, String remark) {
+        String bizNo = (requestNo == null || requestNo.isBlank())
+                ? bnOrGenerated(batchNo) : requestNo;
+        return applyInbound(materialId, quantity, batchNo, warehouseId, operatorId,
+                operatorName, "进货入库", bnOrGenerated(batchNo), remark, bizNo);
+    }
+
+    /**
+     * 入库核心：条件更新现有量、写入库流水、返回最新快照。
+     *
+     * <p>注意 {@code bizType} 用于流水展示（"入库" / "进货入库"），
+     * {@code bizNo} 是审计链路键（仓管手工入库用批次号，审批入库用审批单号），
+     * 二者分开：批次号留在流水 {@code batch_no}，单号留在 {@code biz_no}。
+     */
+    private InventoryVO applyInbound(Long materialId, BigDecimal quantity, String batchNo,
+                                     Long warehouseId, Long operatorId, String operatorName,
+                                     String bizType, String bn, String remark, String bizNo) {
         Long wid = wid(warehouseId);
         MaterialInventory before = inventoryMapper.selectOne(materialId, wid);
         if (before == null) {
@@ -394,15 +427,18 @@ public class InventoryService {
         if (affected != 1) {
             throw new BusinessException(ErrorCode.CONCURRENT_CONFLICT, "入库失败，请重试");
         }
-        String bn = (batchNo == null || batchNo.isBlank())
-                ? BizNoGenerator.generateWithNano(BizNoGenerator.MATERIAL_BATCH_PREFIX) : batchNo;
         writeTransaction(materialId, before.getMaterialCode(), wid, bn,
                 TX_INBOUND, quantity,
                 nz(before.getQuantity()), nz(before.getQuantity()).add(quantity),
                 nz(before.getReservedQuantity()), nz(before.getReservedQuantity()),
-                "入库", bn, operatorId, operatorName, remark);
-        log.info("[入库] material={} qty={} batch={}", before.getMaterialCode(), quantity, bn);
+                bizType, bizNo, operatorId, operatorName, remark);
+        log.info("[入库] material={} qty={} batch={} bizType={}", before.getMaterialCode(), quantity, bn, bizType);
         return toVO(inventoryMapper.selectOne(materialId, wid));
+    }
+
+    private static String bnOrGenerated(String batchNo) {
+        return (batchNo == null || batchNo.isBlank())
+                ? BizNoGenerator.generateWithNano(BizNoGenerator.MATERIAL_BATCH_PREFIX) : batchNo;
     }
 
     /* ==================== 齐套分析（任务 4.2 的库存侧） ==================== */
@@ -488,7 +524,7 @@ public class InventoryService {
     /**
      * 写库存流水（业务与流水必须在同一事务）。
      */
-    private void writeTransaction(Long materialId, String materialCode, Long warehouseId,
+    private InventoryTransaction writeTransaction(Long materialId, String materialCode, Long warehouseId,
                                   String batchNo, int type, BigDecimal qty,
                                   BigDecimal beforeQty, BigDecimal afterQty,
                                   BigDecimal beforeReserved, BigDecimal afterReserved,
@@ -512,6 +548,7 @@ public class InventoryService {
         tx.setOperatorName(operatorName);
         tx.setRemark(remark);
         transactionMapper.insert(tx);
+        return tx;
     }
 
     private static Long wid(Long warehouseId) {

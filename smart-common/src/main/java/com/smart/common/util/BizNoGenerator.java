@@ -44,6 +44,8 @@ public final class BizNoGenerator {
     public static final String PRODUCT_BATCH_PREFIX = "PB";
     /** 质检单前缀 */
     public static final String INSPECTION_PREFIX = "QC";
+    /** 进货审批单前缀（补料申请） */
+    public static final String PURCHASE_REQUEST_PREFIX = "PR";
     /** 状态流转日志无单号 */
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyyMMdd");
 

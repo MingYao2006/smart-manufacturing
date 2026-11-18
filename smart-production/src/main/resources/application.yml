@@ -79,6 +79,9 @@ smart:
     product:
       # 直连基础资料服务（Nacos 未启动也能本地演示）
       base-url: ${PRODUCT_SERVICE_URL:http://127.0.0.1:9002}
+    system:
+      # 直连系统服务，用于派工时反查被委派用户的角色（Nacos 未启动也能本地演示）
+      base-url: ${SYSTEM_SERVICE_URL:http://127.0.0.1:9001}
   mq:
     # ⚠️ RabbitMQ 未安装时可置 false：outbox 仍会落库，业务不受影响
     enabled: ${SMART_MQ_ENABLED:true}

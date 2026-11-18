@@ -1,7 +1,9 @@
 package com.smart.system.controller;
 
 import com.smart.common.auth.RoleGuard;
+import com.smart.common.auth.RolePermissionMatrix;
 import com.smart.common.result.Result;
+import com.smart.system.dto.SystemDtos;
 import com.smart.system.dto.SystemDtos.LoginRequest;
 import com.smart.system.dto.SystemDtos.LoginVO;
 import com.smart.system.dto.SystemDtos.UserVO;
@@ -28,6 +30,15 @@ import java.util.List;
 public class AuthController {
 
     private final AuthService authService;
+
+    @Operation(summary = "角色权限矩阵（前端侧栏/按钮显隐的唯一真源）")
+    @GetMapping("/auth/permissions")
+    public Result<SystemDtos.PermissionMatrixVO> permissions() {
+        return Result.ok(new SystemDtos.PermissionMatrixVO(
+                RolePermissionMatrix.asMap(),
+                RolePermissionMatrix.ALL_VIEWS,
+                RolePermissionMatrix.ROLE_LABELS));
+    }
 
     @Operation(summary = "登录（签发 JWT）", description = "演示账号：admin / planner / warehouse / operator / inspector，密码均为 123456")
     @PostMapping("/auth/login")

@@ -53,8 +53,16 @@ class RoleAuthorizationFilterTest {
     void allowedRoleIsForwarded() {
         assertEquals(0, dispatch(HttpMethod.POST, "/production-service/work-task/9/dispatch", "PLANNER"));
         assertEquals(0, dispatch(HttpMethod.POST, "/production-service/report", "OPERATOR"));
+        // 质检点工序（如老化测试）可派给质检员，因此工序执行也放行 INSPECTOR；
+        // 「只能动派给本人的工序」由 smart-production 的 requireExecutor 判。
+        assertEquals(0, dispatch(HttpMethod.POST, "/production-service/work-task/9/start", "INSPECTOR"));
+        assertEquals(0, dispatch(HttpMethod.POST, "/production-service/work-task/9/complete", "INSPECTOR"));
+        assertEquals(0, dispatch(HttpMethod.POST, "/production-service/report", "INSPECTOR"));
         assertEquals(0, dispatch(HttpMethod.POST, "/inventory-service/inventory/inbound", "WAREHOUSE"));
         assertEquals(0, dispatch(HttpMethod.POST, "/quality-service/inspection", "INSPECTOR"));
+        assertEquals(0, dispatch(HttpMethod.POST, "/inventory-service/purchase", "WAREHOUSE"));
+        assertEquals(0, dispatch(HttpMethod.POST, "/inventory-service/purchase/5/approve", "PLANNER"));
+        assertEquals(0, dispatch(HttpMethod.POST, "/inventory-service/purchase/5/reject", "PLANNER"));
         assertTrue(forwarded.get());
     }
 
@@ -137,5 +145,25 @@ class RoleAuthorizationFilterTest {
         assertEquals(403, exchange.getResponse().getStatusCode().value());
         assertTrue(body.contains("\"code\":40300"), body);
         assertTrue(body.contains("\"success\":false"), body);
+    }
+
+    @Test
+    @DisplayName("进货审批单：越权角色被拦截")
+    void purchaseApprovalForbiddenRoles() {
+        assertEquals(403, dispatch(HttpMethod.POST, "/inventory-service/purchase", "PLANNER"));
+        assertEquals(403, dispatch(HttpMethod.POST, "/inventory-service/purchase", "INSPECTOR"));
+        assertEquals(403, dispatch(HttpMethod.POST, "/inventory-service/purchase/5/approve", "WAREHOUSE"));
+        assertEquals(403, dispatch(HttpMethod.POST, "/inventory-service/purchase/5/approve", "OPERATOR"));
+        assertEquals(403, dispatch(HttpMethod.POST, "/inventory-service/purchase/5/reject", "WAREHOUSE"));
+        assertEquals(403, dispatch(HttpMethod.POST, "/inventory-service/purchase/5/cancel", "PLANNER"));
+    }
+
+    @Test
+    @DisplayName("进货审批单：管理员统一放行（或签，管理员可审可撤）")
+    void purchaseApprovalAdminBypass() {
+        assertEquals(0, dispatch(HttpMethod.POST, "/inventory-service/purchase/5/approve", "ADMIN"));
+        assertEquals(0, dispatch(HttpMethod.POST, "/inventory-service/purchase/5/reject", "ADMIN"));
+        assertEquals(0, dispatch(HttpMethod.POST, "/inventory-service/purchase", "ADMIN"));
+        assertTrue(forwarded.get());
     }
 }

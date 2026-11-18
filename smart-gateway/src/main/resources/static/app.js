@@ -34,6 +34,7 @@
     trace: clone(demo.trace),
     traceIsLive: false,
     quality: clone(demo.qualityQueue),
+    purchaseRequests: clone(demo.purchaseRequests),
     // 质检页独立加载状态（不复用工单列表的 sync，避免互相干扰）
     inspectionLoading: false,
     inspectionLoaded: false,
@@ -47,6 +48,7 @@
     orderQuery: '',
     taskFilter: 'all',
     materialQuery: '',
+    purchaseFilter: 'all',
     traceBatch: demo.trace.root.batchNo,
     loadingOrder: null,
     ordersPage: { current: 1, size: 10, total: 0, pages: 0 },
@@ -150,36 +152,77 @@
        · smart-gateway RoleAuthorizationFilter（方法 + 路径的接口级拦截）
      前端这一层只负责「看不到入口」，真正挡越权的是服务端。
      ========================================================== */
-  const ROLE_NAMES = {
+  /* ===== 角色矩阵：后端为唯一真源，前端硬编码仅为兜底 =====
+     #3：后端 GET /system/auth/permissions 下发 roles / views / roleLabels。
+     页面启动时拉一次（未登录也能拉，网关白名单），成功后覆盖下面三个变量；
+     拉不到（演示模式 / 后端旧版本）就继续用这份与后端逐字一致的兜底常量。
+     这样以后加角色 / 改权限，只需改后端 RolePermissionMatrix 一处。 */
+  const FALLBACK_ROLE_NAMES = {
     ADMIN: '系统管理员',
     PLANNER: '生产计划员',
     WAREHOUSE: '仓库管理员',
     OPERATOR: '车间操作工',
     INSPECTOR: '质检员'
   };
-
-  // null 表示该角色拥有全部权限（只有 ADMIN）
-  const ROLE_PERMISSIONS = {
+  const FALLBACK_ROLE_PERMISSIONS = {
     ADMIN: null,
-    PLANNER: ['order.create', 'order.plan', 'order.execute', 'task.dispatch', 'inv.reserve', 'user.list'],
-    WAREHOUSE: ['inv.reserve', 'inv.issue', 'inv.reconcile', 'inv.inbound'],
+    PLANNER: ['order.create', 'order.plan', 'order.execute', 'task.dispatch', 'inv.reserve', 'user.list', 'purchase.approve'],
+    WAREHOUSE: ['inv.reserve', 'inv.issue', 'inv.reconcile', 'inv.inbound', 'purchase.create'],
     OPERATOR: ['order.execute', 'task.execute', 'report.create'],
-    INSPECTOR: ['task.inspect', 'inspection.create']
+    // 质检员同时可执行派给自己的质检点工序（如「老化测试」），完成后再放行/退回
+    INSPECTOR: ['task.inspect', 'inspection.create', 'task.execute', 'report.create']
   };
-
-  // 侧栏模块可见性：登录后的第一屏就是该角色的工作面。
-  // 质检员只保留「工作台 / 质检任务 / 生产工单」：
-  //   - quality 是主工作面（待质检工单队列在这里）；
-  //   - orders 用于点进工单详情看质检记录，不能去掉；
-  //   - 其余（工序任务 / 库存 / 基础资料 / 批次追溯）与质检职责无关，直接剔除，
-  //     避免点进去看到「无权限」或空数据。
-  const ROLE_VIEWS = {
+  const FALLBACK_ROLE_VIEWS = {
     ADMIN: null,
-    PLANNER: ['today', 'orders', 'tasks', 'materials', 'basic', 'trace'],
-    WAREHOUSE: ['today', 'orders', 'materials', 'basic'],
+    PLANNER: ['today', 'orders', 'tasks', 'materials', 'basic', 'trace', 'purchase'],
+    WAREHOUSE: ['today', 'materials', 'purchase'],
     OPERATOR: ['today', 'tasks', 'orders'],
     INSPECTOR: ['today', 'quality', 'orders']
   };
+
+  let ROLE_NAMES = { ...FALLBACK_ROLE_NAMES };
+  // null 表示该角色拥有全部权限（只有 ADMIN）
+  let ROLE_PERMISSIONS = { ...FALLBACK_ROLE_PERMISSIONS };
+  // 侧栏模块可见性：登录后的第一屏就是该角色的工作面。
+  // 仓管只保留「生产运营 / 库存与物料 / 进货审批」，其余按角色剔除。
+  let ROLE_VIEWS = { ...FALLBACK_ROLE_VIEWS };
+  let permissionMatrixFromServer = false;
+
+  /** 用后端下发的矩阵覆盖本地兜底；任何异常都静默保留兜底值 */
+  function applyPermissionMatrix(matrix) {
+    if (!matrix || !matrix.roles || typeof matrix.roles !== 'object') return;
+    const views = {}, perms = {}, labels = {};
+    Object.entries(matrix.roles).forEach(([role, cfg]) => {
+      if (!cfg || typeof cfg !== 'object') return;
+      const all = cfg.all === true;
+      views[role] = all ? null : (Array.isArray(cfg.views) ? cfg.views.slice() : []);
+      perms[role] = all ? null : (Array.isArray(cfg.permissions) ? cfg.permissions.slice() : []);
+      if (cfg.label) labels[role] = cfg.label;
+    });
+    if (!Object.keys(views).length) return;
+    ROLE_VIEWS = views;
+    ROLE_PERMISSIONS = perms;
+    if (Object.keys(labels).length) ROLE_NAMES = { ...FALLBACK_ROLE_NAMES, ...labels };
+    if (matrix.roleLabels && typeof matrix.roleLabels === 'object') {
+      ROLE_NAMES = { ...FALLBACK_ROLE_NAMES, ...matrix.roleLabels };
+    }
+    permissionMatrixFromServer = true;
+  }
+
+  /** 启动时拉一次矩阵；失败不影响页面（用兜底） */
+  async function loadPermissionMatrix() {
+    try {
+      const matrix = await api.getPermissionMatrix();
+      applyPermissionMatrix(matrix);
+      render();
+    } catch (error) {
+      // 演示模式 / 后端未升级时静默用兜底常量，不打扰用户
+      if (state.mode === 'live') {
+        console.warn('[权限矩阵] 后端未提供，使用前端兜底：', error.message);
+      }
+    }
+  }
+
 
   const ORDER_TARGET_PERMISSION = {
     APPROVED: 'order.plan',
@@ -227,7 +270,11 @@
     'create-bom': 'basic.write',
     'create-route': 'basic.write',
     'basic-activate': 'basic.write',
-    'basic-delete': 'basic.write'
+    'basic-delete': 'basic.write',
+    'purchase-new': 'purchase.create',
+    'purchase-approve': 'purchase.approve',
+    'purchase-reject': 'purchase.approve',
+    'purchase-cancel': 'purchase.create'
   };
 
   function currentRoles() {
@@ -256,23 +303,39 @@
       || (ROLE_PERMISSIONS[role] || []).includes(permission));
   }
 
+  /**
+   * 侧栏模块可见性：严格按当前角色收口。
+   *
+   * 这里**不再对演示模式豁免** —— 演示数据集里也有角色（默认 planner），
+   * 如果演示模式下全放行，未登录时侧栏会把所有模块都列出来，
+   * 看起来就像「没权限的模块也在菜单里」。现在统一按角色过滤。
+   *
+   * 唯一例外：拿不到任何角色信息时（例如后端没返回 roles）不做收口，
+   * 否则侧栏会整片消失，用户无从下手。
+   */
   function canView(view) {
-    if (state.mode !== 'live') return true;
-    return currentRoles().some((role) => ROLE_VIEWS[role] === null
+    const roles = currentRoles();
+    if (!roles.length) return true;
+    return roles.some((role) => ROLE_VIEWS[role] === null
       || (ROLE_VIEWS[role] || []).includes(view));
   }
 
   function firstAllowedView() {
     // 质检员登录后直接落在「质检任务」工作面，其余角色保持原来的工作台优先。
     const views = state.mode === 'live' && hasRole('INSPECTOR')
-      ? ['quality', 'today', 'orders', 'tasks', 'materials', 'basic', 'trace']
-      : ['today', 'orders', 'tasks', 'materials', 'basic', 'quality', 'trace'];
+      ? ['quality', 'today', 'orders', 'tasks', 'materials', 'basic', 'trace', 'purchase']
+      : ['today', 'orders', 'tasks', 'materials', 'basic', 'quality', 'trace', 'purchase'];
     return views.find(canView) || 'today';
   }
 
-  // 是否属于"只在车间动自己的工序"的角色：操作工（计划员/管理员可以处理别人的工序）
+  // 是否属于"只在车间动自己的工序"的角色：操作工、质检员
+  // （计划员/管理员可以处理别人的工序）。
+  // 质检员也要纳入：质检点工序常由计划员直接派给质检员，
+  // 若不收口，质检员会在工序任务页看到所有工单的工序，分不清哪条是自己的。
   function isShopFloorOnly() {
-    return state.mode === 'live' && hasRole('OPERATOR') && !can('task.dispatch');
+    if (state.mode !== 'live') return false;
+    if (!hasRole('OPERATOR') && !hasRole('INSPECTOR')) return false;
+    return !can('task.dispatch');
   }
 
   // 与后端 WorkTaskService#requireExecutor 的归属校验同口径
@@ -296,7 +359,9 @@
     'inv.reconcile': '库存对账',
     'inv.inbound': '物料入库',
     'inspection.create': '质检单录入',
-    'basic.write': '基础资料维护'
+    'basic.write': '基础资料维护',
+    'purchase.create': '提交进货审批单',
+    'purchase.approve': '审批进货单（管理员或计划员或签）'
   };
 
   const VIEW_LABELS = {
@@ -306,7 +371,8 @@
     materials: '库存与物料',
     basic: '产品与工艺',
     quality: '质检任务',
-    trace: '批次追溯'
+    trace: '批次追溯',
+    purchase: '进货审批'
   };
 
   function grantedPermissions() {
@@ -320,10 +386,13 @@
   }
 
   function permissionSummary() {
-    if (state.mode !== 'live') {
-      return '演示模式不按角色收口，全部模块与操作可见；数据只改浏览器内存，不会落库。';
-    }
+    // 侧栏现在对演示模式也按角色收口，所以这里统一按角色列出可见模块；
+    // 演示模式额外说明「操作不受限、数据不落库」，避免和真实权限混淆。
     const views = Object.keys(VIEW_LABELS).filter(canView).map((view) => VIEW_LABELS[view]);
+    if (state.mode !== 'live') {
+      return `演示模式按当前演示角色（${roleLabel()}）收口侧栏：${views.join(' / ') || '无'}；`
+        + '操作不受角色限制，数据只改浏览器内存，不会落库。';
+    }
     const actions = grantedPermissions().map((permission) => PERMISSION_LABELS[permission]);
     return `可见模块：${views.join(' / ') || '无'}。可执行：${actions.join('、') || '仅查询'}。`;
   }
@@ -492,6 +561,27 @@
         .map((task) => ({ order, task })));
   }
 
+  /**
+   * 派给本人的「待执行质检点工序」（待开始 / 进行中 / 已暂停，尚未进入待质检）。
+   *
+   * 为什么要单列：质检点工序（如「老化测试」）常由计划员直接派给质检员，
+   * 这类工序在开始前是 PENDING(1)，不会出现在上面按 status=6 筛的待质检队列里，
+   * 质检员就会觉得「没收到质检任务」。这里把它们也列出来，并提供开始/完成入口。
+   * 完成后这些工序才进入 status=6，再由待质检队列做放行 / 退回。
+   */
+  function myPendingInspectionTasks() {
+    if (state.mode !== 'live') return [];
+    const me = Number(state.user?.id);
+    if (!Number.isFinite(me)) return [];
+    return state.orders
+      .filter(isActionableOrder)
+      .flatMap((order) => (state.tasksByOrder[order.id] || [])
+        .filter((task) => Number(task.isInspection) === 1)
+        .filter((task) => Number(task.operatorId) === me)
+        .filter((task) => [1, 2, 3].includes(Number(task.status)))
+        .map((task) => ({ order, task })));
+  }
+
   function activeOrder() {
     const switchable = switchableOrders();
     return switchable.find((order) => order.id === state.currentOrderId)
@@ -522,7 +612,8 @@
       materials: 'materials',
       basic: 'basic',
       trace: 'trace',
-      quality: 'quality'
+      quality: 'quality',
+      purchase: 'purchase'
     };
     const view = aliases[name] || 'today';
     return { view, id: id || null, name };
@@ -534,9 +625,17 @@
 
   function updateNavigation(route) {
     const active = route.view === 'orders' && route.id ? 'orders' : route.view;
+    // 角色裁剪用内联 style.display 兜底：部分旧版 styles.css 里
+    // `.rail-nav a { display:flex }` 会盖掉 UA 的 [hidden]{display:none}，
+    // 导致「无权限模块依然显示」。内联样式优先级最高，不依赖 CSS 版本。
+    const setHidden = (node, hide) => {
+      if (!node) return;
+      node.hidden = hide;
+      node.style.display = hide ? 'none' : '';
+    };
     document.querySelectorAll('[data-nav]').forEach((link) => {
       const permitted = canView(link.dataset.nav);
-      link.hidden = !permitted;
+      setHidden(link, !permitted);
       const isActive = permitted && link.dataset.nav === active;
       link.classList.toggle('is-active', isActive);
       if (isActive) link.setAttribute('aria-current', 'page');
@@ -547,15 +646,16 @@
       let node = group.nextElementSibling;
       let hasVisibleLink = false;
       while (node && !node.classList.contains('rail-group')) {
-        if (node.dataset.nav && !node.hidden) hasVisibleLink = true;
+        if (node.dataset.nav && !node.hidden && node.style.display !== 'none') hasVisibleLink = true;
         node = node.nextElementSibling;
       }
-      group.hidden = !hasVisibleLink;
+      setHidden(group, !hasVisibleLink);
     });
     const moreButton = document.getElementById('mobile-more-button');
     if (moreButton) {
-      const moreActive = active === 'basic' || active === 'trace' || active === 'quality';
-      moreButton.hidden = !['basic', 'trace', 'quality'].some(canView);
+      const MORE_VIEWS = ['basic', 'trace', 'quality', 'purchase'];
+      const moreActive = MORE_VIEWS.includes(active);
+      setHidden(moreButton, !MORE_VIEWS.some(canView));
       moreButton.classList.toggle('is-active', moreActive);
       moreButton.setAttribute('aria-label', moreActive ? '更多，当前页面在此菜单中' : '更多模块');
     }
@@ -586,11 +686,26 @@
     avatar.textContent = name.slice(0, 1);
   }
 
+  // 待办动作 -> 对应侧栏模块。点击待办信息（标题/摘要）时跳到该模块，
+  // 点击右侧动作按钮时执行原有动作（下达弹窗或同样跳转）。
   const NOTICE_TARGETS = {
     'navigate-materials': { href: '#/materials', label: '库存与物料' },
     'navigate-quality': { href: '#/quality', label: '质检任务' },
-    'release-order': { href: null, label: '工单列表' }
+    'navigate-orders': { href: '#/orders', label: '生产工单' },
+    'navigate-tasks': { href: '#/tasks', label: '工序任务' },
+    // href 为 null 表示用工单 id 生成详情链接（仍属于「生产工单」侧栏）。
+    'release-order': { href: null, label: '生产工单' }
   };
+
+  // 统一计算一条待办要跳转到哪里：顶栏铃铛与工作台待办卡片共用，
+  // 保证「点信息 -> 跳对应侧栏」在两处行为一致。
+  function decisionTarget(item) {
+    if (!item) return { href: '#/orders', label: '生产工单' };
+    const target = NOTICE_TARGETS[item.action];
+    const fallback = target || { href: '#/orders', label: '生产工单' };
+    const href = fallback.href || (item.orderId ? routeHref('orders', item.orderId) : '#/orders');
+    return { href, label: fallback.label };
+  }
 
   function updateNotices() {
     const badge = document.getElementById('notice-badge');
@@ -607,11 +722,10 @@
 
     list.innerHTML = decisions.length
       ? decisions.map((item) => {
-        const target = NOTICE_TARGETS[item.action];
-        const href = item.action === 'release-order' ? routeHref('orders', item.orderId) : target?.href;
+        const { href, label } = decisionTarget(item);
         return `
-          <a class="notice-item ${item.urgent ? 'is-urgent' : ''}" href="${href}" data-notice-link="1"
-             data-order="${item.orderId}">
+          <a class="notice-item ${item.urgent ? 'is-urgent' : ''}" href="${escapeHtml(href)}" data-notice-link="1"
+             data-order="${item.orderId}" aria-label="前往${escapeHtml(label)}：${escapeHtml(item.title)}">
             <span class="notice-tag ${item.urgent ? 'is-urgent' : ''}">${escapeHtml(item.kicker)}</span>
             <span class="notice-copy">
               <strong>${escapeHtml(item.title)}</strong>
@@ -682,6 +796,7 @@
     orders: '生产管理',
     tasks: '生产管理',
     materials: '物料管理',
+    purchase: '物料管理',
     quality: '质量管理',
     trace: '质量管理'
   };
@@ -720,12 +835,9 @@
 
   function render() {
     const route = parseRoute();
-    // 首页随工单只展示「在制工单」：详情路由可能把 currentOrderId 指向已关闭 / 归档单，
-    // 这里规整一次，保证 Tab 选中态、队列高亮与卡片内容三者始终一致。
-    if (route.view === 'today') {
-      const active = activeOrder();
-      if (active) state.currentOrderId = active.id;
-    }
+    // 工作台「数字随工单」卡片用独立 travelerState：live 时映射真实在制工单，
+    // 否则回退演示快照；组件结构对所有角色一致，且不污染真实工单选中态。
+    if (route.view === 'today') syncTravelerSource();
     // 角色无权访问的模块直接跳回自己的第一个可见模块
     if (!canView(route.view)) {
       const fallback = firstAllowedView();
@@ -750,6 +862,7 @@
     else if (route.view === 'basic') html = renderBasic();
     else if (route.view === 'trace') html = renderTrace();
     else if (route.view === 'quality') html = renderQuality();
+    else if (route.view === 'purchase') html = renderPurchase();
     else html = renderToday();
 
     if (state.mode === 'live') html = syncBanner() + html;
@@ -773,7 +886,8 @@
       materials: '库存与物料',
       basic: '基础资料',
       trace: '批次追溯',
-      quality: '质检任务'
+      quality: '质检任务',
+      purchase: '进货审批'
     }[route.view] || '生产运营工作台';
   }
 
@@ -860,7 +974,7 @@
   }
 
   function renderRouteStations(order, tasks) {
-    const current = currentTaskFor(order.id);
+    const current = travelerCurrentTaskFor(order.id);
     let currentIndex = tasks.findIndex((task) => task.id === current?.id);
     if (tasks.every((task) => task.status === 4 || task.status === 5)) currentIndex = tasks.length - 1;
     if (currentIndex < 0) currentIndex = 0;
@@ -968,17 +1082,142 @@
     return [4, 5].includes(ordered[index - 1].status);
   }
 
+  /* ===== 工作台随工单卡片：演示外观 + 真实数据 =====
+     需求：无论登录角色、无论 live / demo，工作台首页这张「数字随工单 /
+     工序流程图」卡片视觉组件保持一致（Tab / 三站流程图 / 报工条 / 操作按钮齐全，
+     不按角色收口按钮）。数据来源分两种：
+       · live 且拿到真实在制工单：把真实 OrderVO / WorkTaskVO 映射进同一套模板，
+         补齐演示字段（spec / unit / routeVersion / 交期等）保证外观不塌；
+       · 其余情况（demo 模式、live 但暂无在制工单）：回退到 demo 快照，
+         这样任何角色、任何连接状态看到的都不是空卡、且组件结构一致。
+     卡片用独立的 travelerState，不写回 state.orders / state.currentOrderId。 */
+  const travelerState = {
+    orders: clone(demo.orders),
+    tasksByOrder: clone(demo.tasksByOrder),
+    currentOrderId: demo.orders[0].id,
+    source: 'demo'   // 'live' | 'demo'，供页面提示（#11）
+  };
+
+  /** 把真实工单补成「演示模板需要的字段形状」，不改变组件结构 */
+  function normalizeTravelerOrder(order) {
+    return {
+      ...order,
+      productName: order.productName || order.productCode || '生产工单',
+      spec: order.spec || '',
+      unit: order.unit || '台',
+      planQuantity: order.planQuantity ?? 0,
+      planEndTime: order.planEndTime || null,
+      routeVersion: order.routeVersion || order.bomVersion || 'V1',
+      orderNo: order.orderNo || `#${order.id}`
+    };
+  }
+  /** 把真实工序补成演示模板字段（stepNo / workCenter / operatorName / isInspection） */
+  function normalizeTravelerTask(task, orderId) {
+    return {
+      ...task,
+      orderId: task.orderId ?? orderId,
+      stepNo: task.stepNo ?? 0,
+      stepName: task.stepName || '工序',
+      workCenter: task.workCenter || '待指派',
+      operatorName: task.operatorName || '待派工',
+      isInspection: task.isInspection ?? 0,
+      planQuantity: task.planQuantity ?? 0,
+      reportedQuantity: task.reportedQuantity ?? 0,
+      status: Number(task.status ?? 1)
+    };
+  }
+
+  /**
+   * 刷新卡片数据源：live 且有真实在制工单时用真实数据，否则用演示快照。
+   * 每次 render 前调用，保证账号切换 / 数据同步后卡片自动跟上。
+   */
+  function syncTravelerSource() {
+    let real = [];
+    if (state.mode === 'live' && Array.isArray(state.orders)) {
+      real = state.orders.filter(isActionableOrder);
+    }
+    const useLive = real.length > 0 && Object.keys(state.tasksByOrder || {}).length > 0;
+    if (useLive) {
+      const orders = real.map(normalizeTravelerOrder);
+      const tasksByOrder = {};
+      orders.forEach((order) => {
+        const raw = state.tasksByOrder[order.id] || state.tasksByOrder[String(order.id)] || [];
+        tasksByOrder[order.id] = raw.map((t) => normalizeTravelerTask(t, order.id));
+      });
+      travelerState.orders = orders;
+      travelerState.tasksByOrder = tasksByOrder;
+      // 当前选中 id 若已不在真实列表里，回落到第一张，避免空白
+      if (!orders.some((o) => o.id === travelerState.currentOrderId)) {
+        travelerState.currentOrderId = orders[0].id;
+      }
+      travelerState.source = 'live';
+    } else {
+      travelerState.orders = clone(demo.orders);
+      travelerState.tasksByOrder = clone(demo.tasksByOrder);
+      if (!travelerState.orders.some((o) => o.id === travelerState.currentOrderId)) {
+        travelerState.currentOrderId = demo.orders[0].id;
+      }
+      travelerState.source = 'demo';
+    }
+  }
+  function travelerSwitchableOrders() {
+    return travelerState.orders.filter(isActionableOrder);
+  }
+  function travelerActiveOrder() {
+    const list = travelerSwitchableOrders();
+    return list.find((order) => order.id === travelerState.currentOrderId) || list[0] || null;
+  }
+  function travelerTasksFor(orderId) {
+    return travelerState.tasksByOrder[orderId] || travelerState.tasksByOrder[String(orderId)] || [];
+  }
+  function travelerCurrentTaskFor(orderId) {
+    // 演示卡片不做「只看派给本人」收口，保证所有角色看到同一道工序
+    const tasks = travelerTasksFor(orderId);
+    if (!tasks.length) return null;
+    return tasks.find((task) => task.status === 2)
+      || tasks.find((task) => task.status === 6)
+      || tasks.find((task) => task.status === 3)
+      || tasks.find((task) => task.status !== 4 && task.status !== 5)
+      || tasks[tasks.length - 1];
+  }
+  // 演示卡片按钮：只按工序状态推导，不做角色 / 归属收口（组件对所有角色一致）
+  function travelerTaskButtons(task, theme = 'dark') {
+    if (!task) return '';
+    const buttonClass = theme === 'dark' ? 'button ghost-light small' : 'button small';
+    const status = Number(task.status);
+    const tokens = stateTaskActions(task).slice();
+    if (status === 2) {
+      const completeIndex = tokens.indexOf('complete');
+      if (completeIndex >= 0) tokens.splice(completeIndex, 0, 'report');
+      else tokens.push('report');
+    }
+    return tokens.map((token) => {
+      if (token === 'report') {
+        return `<button class="${buttonClass} dark" type="button" data-action="report-task" data-task="${task.id}">提交报工</button>`;
+      }
+      const meta = TASK_ACTION_META[token];
+      if (!meta) return '';
+      if (token === 'start') {
+        const ordered = travelerTasksFor(task.orderId);
+        const index = ordered.findIndex((item) => String(item.id) === String(task.id));
+        const canStart = index <= 0 || [4, 5].includes(ordered[index - 1].status);
+        return `<button class="${buttonClass}" type="button" data-action="start-task" data-task="${task.id}" ${canStart ? '' : 'disabled title="前道工序尚未完成，不能开始"'}>${canStart ? meta.label : '前道未完成'}</button>`;
+      }
+      return `<button class="${buttonClass} ${meta.variant}" type="button" data-action="${token}-task" data-task="${task.id}">${meta.label}</button>`;
+    }).join('');
+  }
+
   // 顶部工单 Tab 芯片：一眼看全所有在制工单，点击就地切换随工单。
   function renderTravelerTabs() {
-    const orders = switchableOrders();
+    const orders = travelerSwitchableOrders();
     if (orders.length < 2) return '';
-    const active = activeOrder();
+    const active = travelerActiveOrder();
     return `
       <div class="traveler-tabs" id="traveler-tabs" role="tablist" aria-label="切换在制工单">
         <span class="traveler-tabs-label">在制工单</span>
         ${orders.map((order) => {
           const tone = order.status === 5 ? ' is-paused' : (isOrderRisk(order) ? ' is-risk' : '');
-          const selected = order.id === active.id;
+          const selected = !!active && order.id === active.id;
           return `<button class="wo-tab${tone}" type="button" role="tab"
             data-action="switch-order" data-order="${order.id}"
             aria-selected="${selected}" tabindex="${selected ? '0' : '-1'}"
@@ -990,11 +1229,18 @@
   }
 
   function renderTraveler(order) {
+    order = travelerActiveOrder();   // 演示外观模板；数据源由 syncTravelerSource 决定
     if (!order) return '<div class="empty-state">暂无生产工单</div>';
+    // #11：卡片是只读快照，明确告诉用户「进度不会随这里的操作变化」，
+    // 避免把演示快照误当成实时看板、也避免以为真实数据没刷新。
+    const sourceNote = travelerState.source === 'demo'
+      ? '<p class="traveler-source-note" title="为保证各角色看到的组件一致，此处固定展示演示随工单快照">演示随工单快照 · 只读</p>'
+      : '<p class="traveler-source-note is-live" title="数据来自网关真实工单，操作请到「工序任务」页">实时在制工单 · 只读速览</p>';
     return `
       <section class="traveler" id="traveler-card" aria-labelledby="traveler-product-name">
         ${renderTravelerTabs()}
         <p class="sr-only traveler-switch-live" aria-live="polite"></p>
+        ${sourceNote}
         <div class="traveler-stage" id="traveler-stage">
           ${renderTravelerSlide(order)}
         </div>
@@ -1004,8 +1250,8 @@
   // 内容层：抽出来供局部切换复用。外壳（渐变、网格底纹、顶部 3px 线）保持静止，
   // 只有这一层在切换时滑移，观感是「同一张卡片上传送带送来下一版工单内容」。
   function renderTravelerSlide(order) {
-    const tasks = tasksFor(order.id);
-    const current = currentTaskFor(order.id);
+    const tasks = travelerTasksFor(order.id);
+    const current = travelerCurrentTaskFor(order.id);
     const due = relativeMinutes(order.planEndTime);
     const reported = Number(current?.reportedQuantity || 0);
     const plan = Number(current?.planQuantity || order.planQuantity || 0);
@@ -1031,7 +1277,7 @@
               <span>路线 ${escapeHtml(order.routeVersion || 'V1')}</span>
             </p>
           </div>
-          <a class="button ghost-light" href="${routeHref('orders', order.id)}">工单详情 ${icon('arrow')}</a>
+          <a class="button ghost-light" href="${travelerState.source === 'live' ? routeHref('orders', order.id) : '#/orders'}">${travelerState.source === 'live' ? '工单详情' : '工单列表'} ${icon('arrow')}</a>
         </div>
         ${renderRouteStations(order, tasks)}
         <div class="traveler-foot">
@@ -1050,7 +1296,7 @@
             <div class="qty-track" style="--value:${qtyPercent}%"><span></span></div>
           </div>
           <div class="task-actions">
-            ${taskButtons(current, 'dark')}
+            ${travelerTaskButtons(current, 'dark')}
           </div>
         </div>
       </div>
@@ -1114,7 +1360,7 @@
     const stage = document.getElementById('traveler-stage');
     if (!card || !stage) { render(); return; }
 
-    const orders = switchableOrders();
+    const orders = travelerSwitchableOrders();
     const order = orders.find((item) => String(item.id) === String(orderId));
     if (!order) return;
 
@@ -1125,7 +1371,7 @@
     const dir = newIndex >= oldIndex ? 1 : -1;
 
     cancelTravelerAnims(stage);
-    state.currentOrderId = order.id;             // 数据状态立即写入
+    travelerState.currentOrderId = order.id;     // 只改演示卡片状态，不碰真实工单
 
     // 同步 Tab 选中态与队列高亮（不重建整页，焦点保持在触发元素上）
     card.querySelectorAll('.wo-tab').forEach((tab) => {
@@ -1138,7 +1384,7 @@
     });
     const live = card.querySelector('.traveler-switch-live');
     if (live) {
-      const current = currentTaskFor(order.id);
+      const current = travelerCurrentTaskFor(order.id);
       live.textContent = `当前随工单 ${order.orderNo}，${order.productName}，当前工序 ${current ? current.stepName : '尚未生成工序'}。`;
     }
     if (focusTab) {
@@ -1339,9 +1585,12 @@
 
   const TREND_DAYS = 7;
 
-  async function ensureTrendData() {
+  // 趋势图按最近 200 张工单聚合，是服务端快照。
+  // force=true 时即使已加载也重取；重取期间保留旧曲线，避免闪成「正在读取」。
+  async function ensureTrendData(force = false) {
     if (state.mode !== 'live') return;
-    if (state.trend.loading || state.trend.loaded) return;
+    if (state.trend.loading) return;
+    if (!force && state.trend.loaded) return;
     state.trend.loading = true;
     try {
       const result = await api.pageOrders({ current: 1, size: 200 });
@@ -1349,7 +1598,8 @@
       state.trend.loaded = true;
       state.trend.error = '';
     } catch (error) {
-      state.trend.error = error.message;
+      // 已有曲线时保留旧数据，只记录错误，避免一次网络抖动把图清空。
+      if (!state.trend.loaded) state.trend.error = error.message;
     }
     state.trend.loading = false;
     render();
@@ -1514,6 +1764,25 @@
       counts.set(code, row);
     });
     return [...counts.values()].sort((a, b) => b.count - a.count || a.code - b.code);
+  }
+
+  // 状态流转成功后，先按本次流转原地调整计数，让「工单状态流水线」立刻跳变，
+  // 不必等 /order/stats/status 往返；随后 refreshDashboardSnapshots 用服务端全库计数校正。
+  function shiftOrderStatusCount(fromCode, toCode, toLabel) {
+    if (state.mode !== 'live' || !Array.isArray(state.orderStatusCounts)) return;
+    const from = Number(fromCode);
+    const to = Number(toCode);
+    if (!from || !to || from === to) return;
+    const rows = state.orderStatusCounts.map((row) => ({ ...row }));
+    const dec = rows.find((row) => Number(row.status) === from);
+    if (dec) dec.count = Math.max(0, Number(dec.count || 0) - 1);
+    let inc = rows.find((row) => Number(row.status) === to);
+    if (!inc) {
+      inc = { status: to, statusDesc: toLabel || `状态 ${to}`, count: 0 };
+      rows.push(inc);
+    }
+    inc.count = Number(inc.count || 0) + 1;
+    state.orderStatusCounts = rows;
   }
 
   // 工单状态配色（与状态机语义一致：在制蓝、暂停橙、完工绿、终态灰）
@@ -1979,16 +2248,25 @@
         </div>
         ${top.length ? `
           <ul class="decision-list">
-            ${top.map((item) => `
-              <li class="decision-item${item.urgent ? ' is-urgent' : ''}">
-                <span class="decision-kicker">${escapeHtml(item.kicker)}</span>
-                <strong>${escapeHtml(item.title)}</strong>
-                <button class="decision-action" type="button"
-                  data-action="${item.action}" data-order="${item.orderId}">
-                  ${escapeHtml(item.label)} ${icon('arrow')}
-                </button>
-              </li>
-            `).join('')}
+            ${top.map((item) => {
+              // 整条信息（标签 + 标题 + 摘要）都是链接，点哪里都能跳到对应侧栏；
+              // 右侧动作按钮保留原有语义（下达弹窗 / 快捷跳转）。
+              const { href, label } = decisionTarget(item);
+              return `
+                <li class="decision-item${item.urgent ? ' is-urgent' : ''}">
+                  <a class="decision-main" href="${escapeHtml(href)}"
+                     aria-label="前往${escapeHtml(label)}：${escapeHtml(item.title)}">
+                    <span class="decision-kicker">${escapeHtml(item.kicker)}</span>
+                    <strong>${escapeHtml(item.title)}</strong>
+                    <small class="decision-detail">${escapeHtml(item.detail)}</small>
+                  </a>
+                  <button class="decision-action" type="button"
+                    data-action="${item.action}" data-order="${item.orderId}">
+                    ${escapeHtml(item.label)} ${icon('arrow')}
+                  </button>
+                </li>
+              `;
+            }).join('')}
           </ul>
           ${decisions.length > top.length
             ? `<a class="decision-more" href="#/tasks">还有 ${decisions.length - top.length} 项，查看全部</a>`
@@ -1999,7 +2277,7 @@
   }
 
   function renderToday() {
-    const order = activeOrder();
+    const order = travelerActiveOrder();
     const createButton = can('order.create')
       ? `<button class="button primary" type="button" data-action="create-order">${icon('plus')} 新建工单</button>`
       : '';
@@ -2068,9 +2346,12 @@
   }
 
   function filteredOrders() {
-    // live 模式也过滤掉已取消 / 已关闭工单：它们是终态，点进去做质检等操作
-    // 只会得到「工单不存在」。想查历史可用状态筛选配合后端分页，这里默认不展示。
-    if (state.mode === 'live') return state.orders.filter(isActionableOrder);
+    // live 模式直接展示网关返回的全部工单，包括「已取消 / 已关闭」等终态工单。
+    // 终态工单仍可打开详情查看：后端 getOrderDetail 对终态工单正常返回（只是工序为
+    // 作废 SKIPPED 状态），只有已被彻底删除的工单才会报「工单不存在」。因此不应把
+    // 它们从工单列表里隐藏，否则像车间操作工这类账号登录后就看不到已取消的历史生产工单。
+    // 状态筛选交给后端 pageOrder 的 status 参数（顶部状态芯片）处理，这里不再二次过滤。
+    if (state.mode === 'live') return state.orders;
     const query = state.orderQuery.trim().toLowerCase();
     return state.orders.filter((order) => {
       const matchesQuery = !query
@@ -4512,7 +4793,9 @@
               }).join('')}
             </ol>
           ` : '<p class="inventory-watch-empty">全部物料均高于安全库存线。</p>'}
-          <a class="inventory-watch-link" href="#/trace">${live ? '前往批次追溯' : '查看批次来源'} ${icon('arrow')}</a>
+          ${can('purchase.create')
+            ? `<button class="button small primary inventory-watch-link" type="button" data-action="purchase-new">${icon('plus')} 申请进货审批</button>`
+            : `<a class="inventory-watch-link" href="#/trace">${live ? '前往批次追溯' : '查看批次来源'} ${icon('arrow')}</a>`}
         </aside>
       </section>
       <div class="toolbar">
@@ -4547,6 +4830,425 @@
         <div class="list-foot"><span>显示 ${items.length} / ${state.inventory.length} 个物料</span><span>可用量 = 现有量 − 预留量</span></div>
       </section>
     `;
+  }
+
+  /* ==================== 进货审批（仓管申请 / 管理员·计划员或签） ==================== */
+
+  const PURCHASE_STATUS = {
+    1: { label: '待审批', tone: 'warning' },
+    2: { label: '已通过·已入库', tone: 'success' },
+    3: { label: '已驳回', tone: 'neutral' },
+    4: { label: '已撤销', tone: 'neutral' }
+  };
+
+  function purchaseStatusPill(status) {
+    const meta = PURCHASE_STATUS[status] || { label: '未知', tone: 'neutral' };
+    return `<span class="status-pill tone-${meta.tone}">${meta.label}</span>`;
+  }
+
+  function filteredPurchaseRequests() {
+    const all = state.purchaseRequests || [];
+    if (state.purchaseFilter === 'all') return all;
+    const status = Number(state.purchaseFilter);
+    return all.filter((item) => Number(item.status) === status);
+  }
+
+  function purchaseCounts() {
+    const all = state.purchaseRequests || [];
+    const count = (s) => all.filter((item) => Number(item.status) === s).length;
+    return {
+      pending: count(1),
+      approved: count(2),
+      rejected: count(3),
+      cancelled: count(4),
+      inboundQty: all
+        .filter((item) => Number(item.status) === 2)
+        .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0)
+    };
+  }
+
+  function renderPurchase() {
+    const counts = purchaseCounts();
+    const items = filteredPurchaseRequests();
+    const live = state.mode === 'live';
+    const canApply = can('purchase.create');
+    const canApprove = can('purchase.approve');
+    const filterChips = [
+      ['all', `全部 ${state.purchaseRequests.length}`],
+      ['1', `待审批 ${counts.pending}`],
+      ['2', `已通过 ${counts.approved}`],
+      ['3', `已驳回 ${counts.rejected}`],
+      ['4', `已撤销 ${counts.cancelled}`]
+    ].map(([value, label]) => {
+      const active = state.purchaseFilter === value;
+      return `<a class="filter-chip ${active ? 'is-active' : ''}" href="#/purchase" data-action="purchase-filter" data-filter="${value}">${label}</a>`;
+    }).join('');
+
+    const rows = items.length ? items.map((item) => {
+      const inventory = (state.inventory || []).find((inv) => Number(inv.materialId) === Number(item.materialId));
+      const beforeAvail = item.beforeAvailable != null ? Number(item.beforeAvailable)
+        : inventory ? Number(inventory.availableQuantity) : null;
+      const afterAvail = beforeAvail != null ? beforeAvail + (Number(item.quantity) || 0) : null;
+      const postureChanged = beforeAvail != null && inventory && inventory.safetyStock != null
+        ? (beforeAvail < Number(inventory.safetyStock)) && (afterAvail >= Number(inventory.safetyStock))
+        : false;
+      const postureCell = Number(item.status) === 2 && beforeAvail != null
+        ? `<span class="muted">${formatNumber(beforeAvail)} →</span> <strong>${formatNumber(afterAvail)}</strong>${postureChanged ? ' <span class="status-pill tone-success">态势回正</span>' : ''}`
+        : `<span class="muted">${beforeAvail != null ? `${formatNumber(beforeAvail)} 可用` : '—'}</span>`;
+      const actions = [];
+      if (Number(item.status) === 1) {
+        if (canApprove) {
+          actions.push(`<button class="button small primary" type="button" data-action="purchase-approve" data-id="${item.id}">通过</button>`);
+          actions.push(`<button class="button small danger" type="button" data-action="purchase-reject" data-id="${item.id}">驳回</button>`);
+        }
+        // #5：撤销入口只对「申请人本人」显示；后端 RoleGuard.requireSelf 仍是最后一道
+        const me = Number(state.user?.id);
+        const owner = Number(item.applicantId);
+        const isMine = Number.isFinite(me) && Number.isFinite(owner) && me === owner;
+        if (canApply && isMine) {
+          actions.push(`<button class="button small" type="button" data-action="purchase-cancel" data-id="${item.id}">撤销</button>`);
+        }
+      }
+      return `
+        <tr>
+          <td>
+            <div class="cell-primary"><strong>${escapeHtml(item.requestNo)}</strong>
+              <span>${escapeHtml(item.materialName || '')} · ${escapeHtml(item.materialCode || '')}</span></div>
+          </td>
+          <td class="cell-num"><strong>${formatNumber(item.quantity)}</strong> ${escapeHtml(item.unit || '')}</td>
+          <td><span class="muted">${escapeHtml(inventory ? (inventory.materialCode || '') : '')}</span></td>
+          <td>${purchaseStatusPill(item.status)}</td>
+          <td>${postureCell}</td>
+          <td>
+            <div class="cell-primary"><span>${escapeHtml(item.applicantName || '—')}</span>
+              <small>${escapeHtml(formatDateTime(item.createTime))}</small></div>
+          </td>
+          <td><span class="muted">${escapeHtml(item.approverName || '—')}</span></td>
+          <td>
+            <div class="table-actions">${actions.length ? actions.join('') : '<span class="muted">—</span>'}</div>
+          </td>
+        </tr>
+      `;
+    }).join('') : `<tr><td colspan="8" class="table-empty">${escapeHtml(emptyCell(state.purchaseRequests || [], '进货审批单', 'purchase'))}</td></tr>`;
+
+    return `
+      ${pageHead('进货审批', '仓库管理员发现库存不足可提交进货审批单，管理员或生产计划员任一人审批通过即生效，并直接入库、刷新库存态势。', canApply ? `<button class="button primary" type="button" data-action="purchase-new">${icon('plus')} 新建申请</button>` : '')}
+      ${live ? '' : mockNotice('演示模式下「审批通过」只改浏览器内的库存快照，便于观察库存态势变化；不会落库。')}
+      <section class="inventory-overview" aria-labelledby="purchase-summary-title">
+        <div class="inventory-overview-main">
+          <div class="inventory-overview-head">
+            <div><p class="eyebrow">PURCHASE APPROVAL</p><h2 id="purchase-summary-title">审批概览</h2></div>
+            <span class="inventory-risk-badge ${counts.pending ? 'is-risk' : 'is-safe'}">${counts.pending} 单待审批</span>
+          </div>
+          <div class="inventory-kpis">
+            <div><span>待审批</span><strong class="is-risk">${counts.pending}</strong></div>
+            <div><span>已通过·已入库</span><strong>${counts.approved}</strong></div>
+            <div><span>已驳回</span><strong>${counts.rejected}</strong></div>
+            <div><span>累计入库量</span><strong>${formatNumber(counts.inboundQty)}</strong></div>
+          </div>
+        </div>
+      </section>
+      <div class="toolbar">
+        <div class="filter-set">${filterChips}</div>
+        ${canApply ? '<span class="muted">你是仓库管理员，可提交进货审批单。</span>' : (canApprove ? '<span class="muted">你是审批人（管理员/计划员），可或签审批。</span>' : '<span class="muted">仅查看权限。</span>')}
+      </div>
+      <section class="data-surface" aria-label="进货审批单列表">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>单号 / 物料</th>
+                <th>申请数量</th>
+                <th>物料编码</th>
+                <th>状态</th>
+                <th>库存态势（现有可用）</th>
+                <th>申请人</th>
+                <th>审批人</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div class="list-foot"><span>显示 ${items.length} / ${state.purchaseRequests.length} 单</span><span>或签：管理员或计划员任一人通过即生效</span></div>
+      </section>
+    `;
+  }
+
+  function openPurchaseModal() {
+    const materials = (state.inventory || []).map((item) => `
+      <option value="${item.materialId}" data-code="${escapeHtml(item.materialCode || '')}" data-name="${escapeHtml(item.materialName || '')}" data-unit="${escapeHtml(item.unit || '')}">${escapeHtml(item.materialName)}（${escapeHtml(item.materialCode || '')}）</option>
+    `).join('');
+    // #6：仓库改为下拉选择。后端暂无「仓库列表」接口，这里从库存档案里
+    // 收集出现过的 warehouseId，至少保证多仓场景下不再一律写死 1 号仓。
+    const warehouseIds = [...new Set((state.inventory || [])
+      .map((item) => Number(item.warehouseId))
+      .filter((id) => Number.isFinite(id) && id > 0))].sort((a, b) => a - b);
+    if (!warehouseIds.length) warehouseIds.push(1);
+    const warehouseOptions = warehouseIds.map((id) =>
+      `<option value="${id}" ${id === 1 ? 'selected' : ''}>${id === 1 ? '主仓库' : `仓库 ${id}`}（ID ${id}）</option>`).join('');
+    const body = `
+      <form data-form="purchase" class="form-grid">
+        <div class="field full">
+          <label for="purchase-material">申请补料的物料 <span class="req">*</span></label>
+          <select id="purchase-material" name="materialId" required>
+            <option value="" disabled selected>请选择低于安全线的物料…</option>
+            ${materials}
+          </select>
+          <p class="form-note">默认按库存档案补全编码、名称与单位；建议优先选择「库存与物料」中低于安全线的物料。</p>
+        </div>
+        <div class="field">
+          <label for="purchase-qty">进货数量 <span class="req">*</span></label>
+          <input id="purchase-qty" name="quantity" type="number" min="0.0001" step="0.0001" required>
+        </div>
+        <div class="field">
+          <label for="purchase-warehouse">入库仓库</label>
+          <select id="purchase-warehouse" name="warehouseId">${warehouseOptions}</select>
+        </div>
+        <div class="field">
+          <label for="purchase-batch">入库批次号（选填）</label>
+          <input id="purchase-batch" name="batchNo" type="text" placeholder="留空则审批通过时自动生成">
+        </div>
+        <div class="field full">
+          <label for="purchase-reason">申请原因（选填）</label>
+          <textarea id="purchase-reason" name="reason" rows="2" placeholder="如：当前可用量低于安全库存，需补料以维持生产"></textarea>
+        </div>
+        <div class="field full">
+          <label for="purchase-supplier">供应商（选填）</label>
+          <input id="purchase-supplier" name="supplierName" type="text" placeholder="供应商名称">
+        </div>
+        <p class="error-note" data-form-error hidden></p>
+        <div class="form-actions">
+          <button type="button" class="button" data-action="close-modal">取消</button>
+          <button type="submit" class="button primary">提交审批单</button>
+        </div>
+      </form>
+    `;
+    showModal('进货审批', '仓库管理员提交 · 管理员/计划员或签', body);
+  }
+
+  async function handlePurchaseSubmit(form) {
+    const errorNote = form.querySelector('[data-form-error]');
+    const materialId = Number(form.materialId.value);
+    const quantity = Number(form.quantity.value);
+    const batchNo = form.batchNo.value.trim();
+    const reason = form.reason.value.trim();
+    const supplierName = form.supplierName.value.trim();
+    const warehouseId = Number(form.warehouseId?.value) || 1;
+    if (!Number.isFinite(materialId) || !materialId) {
+      return showFormError(errorNote, '请选择申请补料的物料。');
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return showFormError(errorNote, '进货数量必须大于 0。');
+    }
+    const option = form.materialId.selectedOptions[0];
+    const payload = {
+      materialId,
+      quantity,
+      warehouseId,
+      batchNo: batchNo || undefined,
+      reason: reason || undefined,
+      supplierName: supplierName || undefined,
+      materialCode: option?.dataset.code || undefined,
+      materialName: option?.dataset.name || undefined,
+      unit: option?.dataset.unit || undefined
+    };
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    try {
+      if (state.mode === 'live') {
+        const created = await api.createPurchaseApproval(payload);
+        state.purchaseRequests = [created, ...(state.purchaseRequests || [])];
+        showToast(`进货审批单 ${created.requestNo} 已提交，等待管理员/计划员审批。`, 'success');
+      } else {
+        const material = (state.inventory || []).find((item) => Number(item.materialId) === materialId);
+        const created = {
+          id: `demo-${Date.now()}`,
+          requestNo: `PR${Date.now()}`,
+          materialId,
+          materialCode: material?.materialCode || option?.dataset.code,
+          materialName: material?.materialName || option?.dataset.name,
+          unit: material?.unit || option?.dataset.unit,
+          warehouseId,
+          quantity,
+          batchNo: batchNo || '',
+          reason,
+          supplierName,
+          status: 1,
+          statusDesc: '待审批',
+          applicantId: state.user?.id,
+          applicantName: state.user?.realName || state.user?.username,
+          applicantRole: currentRoles()[0],
+          approverId: null,
+          approverName: null,
+          approverRole: null,
+          approveComment: null,
+          approveTime: null,
+          inboundTxId: null,
+          createTime: new Date().toISOString(),
+          updateTime: new Date().toISOString()
+        };
+        state.purchaseRequests = [created, ...(state.purchaseRequests || [])];
+        showToast('演示：进货审批单已提交，等待审批。', 'success');
+      }
+      closeModal();
+      render();
+    } catch (error) {
+      showFormError(errorNote, error.message);
+    } finally {
+      submitButton.disabled = false;
+    }
+  }
+
+  /* 进货审批的驳回 / 撤销改用统一弹窗（#4），不再用原生 confirm / prompt。
+     通过 showModal 的 form 提交收集审批意见，再交给 runPurchaseDecision 执行。 */
+  function decidePurchase(id, decision) {
+    const item = (state.purchaseRequests || []).find((p) => String(p.id) === String(id));
+    if (!item) return;
+    if (decision === 'approve') {
+      // 通过无需额外输入，直接执行（可加一句确认）。
+      runPurchaseDecision(id, 'approve', '');
+      return;
+    }
+    if (decision === 'reject') {
+      const body = `
+        <form data-form="purchase-decision" data-id="${escapeHtml(String(item.id))}" data-decision="reject" class="form-grid">
+          <div class="field full">
+            <label for="pd-comment">驳回意见（选填）</label>
+            <textarea id="pd-comment" name="comment" rows="3"
+              placeholder="例如：库存尚可支撑本月排产，暂缓补料">${escapeHtml(item.approveComment || '')}</textarea>
+          </div>
+          <div class="form-note">单号 ${escapeHtml(item.requestNo)} · ${escapeHtml(item.materialName || '')} ${formatNumber(item.quantity)} ${escapeHtml(item.unit || '')}</div>
+          <div class="form-actions">
+            <button type="button" class="button" data-action="close-modal">取消</button>
+            <button type="submit" class="button danger">确认驳回</button>
+          </div>
+        </form>`;
+      showModal('进货审批', '驳回申请单', body);
+      return;
+    }
+    if (decision === 'cancel') {
+      const body = `
+        <form data-form="purchase-decision" data-id="${escapeHtml(String(item.id))}" data-decision="cancel" class="form-grid">
+          <div class="field full">
+            <p class="modal-intro">确定撤销进货审批单 <strong>${escapeHtml(item.requestNo)}</strong> 吗？撤销后该单不可再审批。</p>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="button" data-action="close-modal">取消</button>
+            <button type="submit" class="button danger">确认撤销</button>
+          </div>
+        </form>`;
+      showModal('进货审批', '撤销申请单', body);
+      return;
+    }
+  }
+
+  function handlePurchaseDecisionSubmit(form) {
+    runPurchaseDecision(form.dataset.id, form.dataset.decision, form.comment ? form.comment.value.trim() : '');
+  }
+
+  async function runPurchaseDecision(id, decision, comment) {
+    const item = (state.purchaseRequests || []).find((p) => String(p.id) === String(id));
+    if (!item) { closeModal(); return; }
+    // #5：前端也拦一道「只能撤销本人申请」，避免点了才被后端拒
+    if (decision === 'cancel') {
+      const me = Number(state.user?.id);
+      const owner = Number(item.applicantId);
+      if (!(Number.isFinite(me) && Number.isFinite(owner) && me === owner)) {
+        showToast('只能撤销本人提交的进货审批单。', 'warning');
+        return;
+      }
+    }
+    try {
+      if (state.mode === 'live') {
+        if (decision === 'approve') {
+          const result = await api.approvePurchaseApproval(id, { comment: comment || undefined });
+          await reloadInventoryForPosture();
+          state.purchaseRequests = (state.purchaseRequests || []).map((p) => String(p.id) === String(id) ? mergePurchaseFromResult(p, result, comment) : p);
+          showToast(`${result.message}（库存态势已刷新）`, 'success');
+        } else if (decision === 'reject') {
+          const updated = await api.rejectPurchaseApproval(id, { comment: comment || undefined });
+          state.purchaseRequests = (state.purchaseRequests || []).map((p) => String(p.id) === String(id) ? updated : p);
+          showToast(`已驳回 ${item.requestNo}。`, 'warning');
+        } else {
+          const updated = await api.cancelPurchaseApproval(id);
+          state.purchaseRequests = (state.purchaseRequests || []).map((p) => String(p.id) === String(id) ? updated : p);
+          showToast(`已撤销 ${item.requestNo}。`, 'warning');
+        }
+      } else {
+        applyPurchaseDecisionDemo(id, decision, comment);
+        showToast(decision === 'approve' ? '演示：审批通过，已自动入库并刷新库存态势。' : decision === 'reject' ? '演示：已驳回。' : '演示：已撤销。', decision === 'approve' ? 'success' : 'warning');
+      }
+      closeModal();
+      render();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  function mergePurchaseFromResult(prev, result, comment) {
+    const inv = (state.inventory || []).find((m) => Number(m.materialId) === Number(prev.materialId));
+    const beforeAvailable = inv ? Number(inv.availableQuantity) : null;
+    return {
+      ...prev,
+      status: result.status,
+      statusDesc: result.statusDesc,
+      approverId: state.user?.id,
+      approverName: state.user?.realName || state.user?.username,
+      approverRole: currentRoles()[0],
+      approveComment: comment || prev.approveComment || null,
+      approveTime: new Date().toISOString(),
+      inboundTxId: result.inboundTxId,
+      beforeAvailable
+    };
+  }
+
+  function applyPurchaseDecisionDemo(id, decision, comment) {
+    const item = (state.purchaseRequests || []).find((p) => String(p.id) === String(id));
+    if (!item) return;
+    const inv = (state.inventory || []).find((m) => Number(m.materialId) === Number(item.materialId));
+    const beforeAvailable = inv ? Number(inv.availableQuantity) : null;
+    item.status = decision === 'approve' ? 2 : decision === 'reject' ? 3 : 4;
+    item.statusDesc = decision === 'approve' ? '已通过·已入库' : decision === 'reject' ? '已驳回' : '已撤销';
+    item.approverId = state.user?.id;
+    item.approverName = state.user?.realName || state.user?.username;
+    item.approverRole = currentRoles()[0];
+    item.approveComment = comment || null;
+    item.approveTime = new Date().toISOString();
+    if (decision === 'approve') {
+      item.beforeAvailable = beforeAvailable;
+      // 演示：直接改本地库存快照，使「库存与物料」页的库存态势随之变化
+      if (inv) {
+        const qty = Number(item.quantity) || 0;
+        inv.quantity = (Number(inv.quantity) || 0) + qty;
+        inv.reservedQuantity = inv.reservedQuantity || 0;
+        inv.availableQuantity = (Number(inv.quantity) || 0) - (Number(inv.reservedQuantity) || 0);
+        inv.belowSafetyStock = Number(inv.availableQuantity) < Number(inv.safetyStock || 0);
+      }
+    }
+  }
+
+  async function reloadInventoryForPosture() {
+    if (state.mode !== 'live') return;
+    try {
+      const inventory = await api.listInventory();
+      state.inventory = Array.isArray(inventory) ? inventory.map((item) => ({ ...item })) : [];
+      state.sync.sources.inventory = 'ok';
+    } catch (error) {
+      state.sync.sources.inventory = error.message;
+    }
+  }
+
+  async function loadPurchaseApprovals() {
+    if (state.mode !== 'live') return;
+    try {
+      const approvals = await api.listPurchaseApprovals();
+      state.purchaseRequests = Array.isArray(approvals) ? approvals.map((item) => ({ ...item })) : [];
+      state.sync.sources.purchase = 'ok';
+    } catch (error) {
+      state.purchaseRequests = [];
+      state.sync.sources.purchase = error.message;
+    }
   }
 
   function flattenTraceTree(nodes, level = 1, output = []) {
@@ -4681,6 +5383,8 @@
     // live：真实待质检队列来自 state.tasksByOrder 里状态 6 的工序任务；
     // demo：沿用演示数据集 state.quality。
     const queue = isLive ? liveInspectionQueue() : null;
+    // 派给本人的待执行质检点工序（待开始 / 进行中 / 已暂停），完成后再进待质检队列
+    const myPending = isLive ? myPendingInspectionTasks() : [];
     const pending = isLive ? queue.length : state.quality.filter((item) => item.status === 'pending').length;
     const passed = isLive ? 0 : state.quality.filter((item) => item.status === 'passed').length;
     const returned = isLive ? 0 : state.quality.filter((item) => item.status === 'returned').length;
@@ -4692,6 +5396,46 @@
         ? '待质检工序需判定放行或退回返工，后道工序才会继续解锁；已取消 / 已关闭的工单不会出现在队列中。'
         : '待质检工序需判定放行或退回返工，后道工序才会继续解锁。')}
       ${isLive ? '' : mockNotice('下方检验队列来自演示数据集（Mock），网关未提供跨工单的质检单列表接口。')}
+      ${isLive && myPending.length ? `
+        <section class="data-surface" aria-labelledby="my-inspection-title" style="margin-bottom:18px">
+          <div class="detail-section-title">
+            <h2 id="my-inspection-title">派给我的质检点工序</h2>
+            <span>${myPending.length} 条待执行</span>
+          </div>
+          <div class="inspection-stack">
+            ${myPending.map(({ order, task }) => {
+              const status = Number(task.status);
+              const statusText = status === 2 ? '进行中' : status === 3 ? '已暂停' : '待开始';
+              const tone = status === 2 ? 'tone-active' : status === 3 ? 'tone-warning' : 'tone-neutral';
+              const actions = [];
+              if (status === 1) {
+                actions.push(`<button class="button small primary" type="button" data-action="start-task" data-task="${task.id}">开始工序</button>`);
+              } else if (status === 2) {
+                actions.push(`<button class="button small" type="button" data-action="report-task" data-task="${task.id}">提交报工</button>`);
+                actions.push(`<button class="button small primary" type="button" data-action="complete-task" data-task="${task.id}">完成工序</button>`);
+              } else if (status === 3) {
+                actions.push(`<button class="button small" type="button" data-action="resume-task" data-task="${task.id}">恢复工序</button>`);
+              }
+              return `
+                <article class="inspection-item is-pending">
+                  <div class="inspection-id">
+                    <strong>${escapeHtml(order.orderNo)}</strong>
+                    ${escapeHtml(order.productName || '')}
+                  </div>
+                  <div class="inspection-main">
+                    <h3>${escapeHtml(task.stepName || '质检点工序')} <span class="status-pill ${tone}">${statusText}</span></h3>
+                    <p>第 ${formatNumber(task.stepNo)} 道工序 · 计划 ${formatNumber(task.planQuantity)} / 已报 ${formatNumber(task.reportedQuantity)} · ${escapeHtml(task.workCenter || '')}</p>
+                    <p>该工序是质检点：完成后进入「待质检」，再判定放行或退回。</p>
+                  </div>
+                  <div class="inspection-actions">
+                    <a class="button small" href="${routeHref('orders', order.id)}">查看工单</a>
+                    ${actions.join('')}
+                  </div>
+                </article>`;
+            }).join('')}
+          </div>
+        </section>
+      ` : ''}
       ${isLive ? '' : `
         <section class="quality-overview" aria-labelledby="quality-gate-title">
           <div class="quality-overview-head">
@@ -4875,6 +5619,13 @@
     lastFocused?.focus?.({ preventScroll: true });
   }
 
+  function showFormError(errorNote, message) {
+    if (!errorNote) return;
+    errorNote.textContent = message;
+    errorNote.hidden = !message;
+    errorNote.classList.add('is-visible');
+  }
+
   function openTaskDrawer(taskId) {
     const task = findTask(taskId);
     if (!task) {
@@ -4923,14 +5674,25 @@
   }
 
   // 派工候选人：live 走 GET /system/user/list；演示模式取自演示数据集里已出现的操作人
-  function dispatchCandidates() {
+  // task 为当前被派工工序：质检点工序（isInspection=1）只允许选质检员，普通工序只允许选车间操作工，
+  // 与后端 dispatch 的「目标角色校验」保持一致（前端过滤只是体验，服务端才是硬约束）。
+  function dispatchCandidates(task) {
     if (state.mode === 'live') {
       // loadUsers 已过滤 status=1，这里再过滤一次作为纵深防御，避免停用账号被派工
-      return state.users.filter((user) => Number(user.status) === 1).map((user) => ({
-        value: String(user.id),
-        name: user.realName || user.username,
-        hint: Array.isArray(user.roles) && user.roles.length ? user.roles.join(' / ') : ''
-      }));
+      const isInspectionTask = task && Number(task.isInspection) === 1;
+      const allowedRoles = isInspectionTask ? ['INSPECTOR'] : ['OPERATOR'];
+      return state.users
+        .filter((user) => Number(user.status) === 1)
+        .filter((user) => {
+          const roles = Array.isArray(user.roles) ? user.roles : [];
+          // ADMIN 兜底可选；其余只保留当前工序允许的角色
+          return roles.includes('ADMIN') || roles.some((r) => allowedRoles.includes(r));
+        })
+        .map((user) => ({
+          value: String(user.id),
+          name: user.realName || user.username,
+          hint: Array.isArray(user.roles) && user.roles.length ? user.roles.join(' / ') : ''
+        }));
     }
     const names = new Set();
     Object.values(state.tasksByOrder).forEach((list) => {
@@ -4947,7 +5709,8 @@
     if (!can('task.dispatch')) return '';
     const status = Number(task.status);
     if (![1, 2, 3].includes(status)) return '';
-    const candidates = dispatchCandidates();
+    const isInspectionTask = Number(task.isInspection) === 1;
+    const candidates = dispatchCandidates(task);
     const loading = state.mode === 'live' && state.usersState.loading;
     const loadError = state.mode === 'live' ? state.usersState.error : '';
     const currentValue = state.mode === 'live'
@@ -4968,9 +5731,9 @@
         <h3>派工</h3>
         <form data-form="dispatch" data-task="${task.id}">
           <div class="field">
-            <label for="dispatch-operator">操作工</label>
+            <label for="dispatch-operator">${isInspectionTask ? '质检员' : '操作工'}</label>
             <select id="dispatch-operator" name="operatorId" aria-describedby="dispatch-note" ${loading ? 'disabled' : ''}>
-              <option value="">${loading ? '加载中…' : '请选择操作工'}</option>
+              <option value="">${loading ? '加载中…' : (isInspectionTask ? '请选择质检员' : '请选择操作工')}</option>
               ${options}
             </select>
           </div>
@@ -5062,8 +5825,15 @@
           <div class="field full">
             <label for="new-product">生产产品</label>
             <select id="new-product" name="productId" required>
-              ${demo.products.map((product) => `<option value="${product.id}">${escapeHtml(product.productCode)} · ${escapeHtml(product.productName)}</option>`).join('')}
+              ${demo.products.map((product) => `<option value="${product.id}" data-name="${escapeHtml(product.productName)}" data-code="${escapeHtml(product.productCode)}">${escapeHtml(product.productCode)} · ${escapeHtml(product.productName)}</option>`).join('')}
             </select>
+          </div>
+          <div class="field full">
+            <label for="new-product-name">产品名称（可自定义）</label>
+            <input id="new-product-name" name="productName" type="text"
+              value="${escapeHtml(demo.products[0]?.productName || '')}"
+              placeholder="默认带出所选产品名称，可改成客户定制名称">
+            <p class="form-note">改这里只影响本工单的显示名称；产品、BOM 与工艺路线仍按上面选的「生产产品」校验。</p>
           </div>
           <div class="field">
             <label for="new-quantity">计划数量</label>
@@ -5220,27 +5990,38 @@
     return map[target] || { code: 2, label: '已审核', actionLabel: '流转', modalTitle: '流转工单', defaultReason: '' };
   }
 
-  function openLoginModal() {
+  // options.switchAccount=true 时，即使当前已经连上网关也展示登录表单，
+  // 用于「切换账号」：不必先断开连接，直接换一个身份重新登录。
+  function openLoginModal(options) {
+    // 这个函数也会被直接绑定为 click 回调，此时首个参数是事件对象，
+    // 因此只认显式的 switchAccount 标记，避免把事件当成配置。
+    const switching = Boolean(options && options.switchAccount === true);
     const live = state.mode === 'live';
+    // 已连接且不是切换账号时，展示「接口已连接」面板；否则展示登录表单。
+    const showLivePanel = live && !switching;
     const localHost = !window.location.hostname
       || window.location.hostname === 'localhost'
       || window.location.hostname === '127.0.0.1';
     const credentialNote = localHost
       ? '本机环境可用种子账号 admin / planner / warehouse / operator / inspector（密码均为 123456），五个角色能看到的操作各不相同。'
       : '请使用管理员分配的网关账号，本页面不提供任何账号密码。';
+    const switchNote = switching
+      ? '<strong>正在切换账号：</strong>登录成功后会用新账号重新读取工单、库存与统计；登录失败会保留当前账号的连接，不会退回演示。'
+      : '';
     const body = `
       <p class="modal-intro">工作台与现有 MES 网关共用同一套识别与路由。登录后可读写真实工单；不连接时仅修改本地演示数据。</p>
       <div class="fact-row"><span>接口地址</span><strong>${escapeHtml(api.state.base)}</strong></div>
       <div class="fact-row"><span>当前身份</span><strong>${live ? escapeHtml(state.user?.realName || '身份待刷新') : '演示身份，操作不落库'} · ${live ? escapeHtml(roleLabel()) : '演示模式'}</strong></div>
       <div class="fact-row"><span>角色权限</span><strong>${escapeHtml(permissionSummary())}</strong></div>
-      ${live ? `
+      ${showLivePanel ? `
         <div class="form-note" style="margin-top:16px">当前工作台已经连接网关。订单、工序与库存操作会调用真实接口。</div>
         <div class="form-actions">
           <button class="button" type="button" data-action="close-modal">继续工作</button>
+          <button class="button" type="button" data-action="switch-account">切换账号</button>
           <button class="button danger" type="button" data-action="disconnect">断开并回到演示</button>
         </div>
       ` : `
-        <form data-form="login" style="margin-top:18px">
+        <form data-form="login" data-switch-account="${switching ? '1' : '0'}" style="margin-top:18px">
           <div class="form-grid">
             <div class="field">
               <label for="login-user">账号</label>
@@ -5251,16 +6032,16 @@
               <input id="login-pass" name="password" type="password" autocomplete="current-password" required>
             </div>
           </div>
-          <div class="form-note" style="margin-top:14px">${escapeHtml(credentialNote)}登录请求固定走网关的 <code>/system/auth/login</code> 路由。</div>
+          <div class="form-note" style="margin-top:14px">${switchNote}${escapeHtml(credentialNote)}登录请求固定走网关的 <code>/system/auth/login</code> 路由。</div>
           <div class="error-note" id="login-error"></div>
           <div class="form-actions">
-            <button class="button" type="button" data-action="close-modal">继续使用演示数据</button>
-            <button class="button primary" type="submit">连接 MES</button>
+            <button class="button" type="button" data-action="${switching ? 'open-connection' : 'close-modal'}">${switching ? '取消切换' : '继续使用演示数据'}</button>
+            <button class="button primary" type="submit">${switching ? '切换并连接' : '连接 MES'}</button>
           </div>
         </form>
       `}
     `;
-    showModal('网关连接', live ? '接口已连接' : '连接 MES 网关', body);
+    showModal('网关连接', switching ? '切换账号' : (live ? '接口已连接' : '连接 MES 网关'), body);
   }
 
   async function loadOrderPage() {
@@ -5278,7 +6059,9 @@
   }
 
   async function hydrateOrderTasks() {
-    const active = state.orders.filter((order) => [3, 4, 5, 6].includes(order.status)).slice(0, 5);
+    // 含终态(7 已关闭 / 8 已取消)：取消 / 关闭的工单点开详情也应能看工艺路线与作废工序，
+    // 后端 getOrderDetail 对终态工单正常返回，不会报「工单不存在」。
+    const active = state.orders.filter((order) => [3, 4, 5, 6, 7, 8].includes(order.status)).slice(0, 12);
     if (!active.length) return;
     const detailResults = await Promise.allSettled(active.map((order) => api.getOrderDetail(order.id)));
     detailResults.forEach((result) => {
@@ -5331,10 +6114,56 @@
   async function loadOrderStatusCounts() {
     try {
       const stats = await api.orderStatusStats();
-      state.orderStatusCounts = Array.isArray(stats) ? stats : null;
+      // 只有拿到合法数组才覆盖；接口异常时保留上一次的计数，
+      // 避免看板在一次网络抖动后闪成「统计接口尚未返回数据」。
+      if (Array.isArray(stats)) state.orderStatusCounts = stats;
     } catch (error) {
-      state.orderStatusCounts = null;
+      if (!Array.isArray(state.orderStatusCounts)) state.orderStatusCounts = null;
     }
+  }
+
+  // 任何写操作成功后调用：把工作台的「派生聚合快照」重新取一遍。
+  // 工单状态流水线 / 工单筛选计数（state.orderStatusCounts）、不良构成
+  // （state.defectStats）、库存态势（state.inventory）与生产趋势（state.trend）
+  // 都来自各自的接口快照，只刷新单张工单详情会让它们停在操作前的旧值。
+  // 与 refreshLiveData 的区别：不弹「正在同步」横幅，单个接口失败也不打断操作流程。
+  async function refreshDashboardSnapshots() {
+    if (state.mode !== 'live') return;
+    const route = parseRoute();
+    // 趋势图是 200 条工单的聚合，只有工作台会展示：在工作台就立刻重取，
+    // 在别处只标记失效，等回到工作台再懒加载，避免每次操作都多打一次大请求。
+    if (route.view !== 'today') state.trend.loaded = false;
+    const trendTask = route.view === 'today' ? ensureTrendData(true) : Promise.resolve();
+    const settled = await Promise.allSettled([
+      loadOrderStatusCounts(),
+      api.listInventory(),
+      api.defectStats(),
+      trendTask
+    ]);
+    // 第 1 项（状态计数）在函数内部已写入 state，这里只取库存与不良构成的结果。
+    const [, inventory, defects] = settled;
+    if (inventory.status === 'fulfilled') {
+      state.inventory = Array.isArray(inventory.value) ? inventory.value.map((item) => ({ ...item })) : [];
+      state.sync.sources.inventory = 'ok';
+    }
+    if (defects.status === 'fulfilled') {
+      state.defectStats = Array.isArray(defects.value) ? defects.value : [];
+      state.sync.sources.defectStats = 'ok';
+    }
+    state.sync.syncedAt = new Date();
+    // 质检页的待检队列来自独立分页，任务状态变了要强制重扫一次。
+    if (route.view === 'quality') loadInspectionQueue(true);
+    // 工单列表页：状态变了要让列表按当前筛选与分页重新取一遍，
+    // 否则刚流转的工单可能还挂在「旧状态」的筛选结果里。
+    if (route.view === 'orders' && !route.id) {
+      try {
+        await loadOrderPage();
+        state.sync.sources.orders = 'ok';
+      } catch (error) {
+        // 保留旧列表，不打断操作反馈
+      }
+    }
+    render();
   }
 
   async function reloadOrderList() {
@@ -5450,10 +6279,23 @@
       state.defectStats = null;
       state.sync.sources.defectStats = error.message;
     }
+    try {
+      const approvals = await api.listPurchaseApprovals();
+      state.purchaseRequests = Array.isArray(approvals) ? approvals.map((item) => ({ ...item })) : [];
+      state.sync.sources.purchase = 'ok';
+    } catch (error) {
+      state.purchaseRequests = [];
+      state.sync.sources.purchase = error.message;
+    }
     state.sync.running = false;
     state.sync.syncedAt = new Date();
     render();
-    if (parseRoute().view === 'today') ensureTrendData();
+    // 趋势图也是服务端聚合快照：每次同步都重取，否则完工 / 新建工单后曲线不更新。
+    if (parseRoute().view === 'today') {
+      await ensureTrendData(true);
+    } else {
+      state.trend.loaded = false;
+    }
   }
 
   async function refreshOrderDetail(orderId) {
@@ -5533,7 +6375,8 @@
       planId: null,
       productId: product.id,
       productCode: product.productCode,
-      productName: product.productName,
+      // 演示模式同样支持自定义产品名称：填了就用，留空用档案名
+      productName: (payload.productName || '').trim() || product.productName,
       spec: product.spec,
       unit: product.unit,
       bomVersion: 'V1',
@@ -5578,6 +6421,8 @@
       if (state.mode === 'live') {
         order = await api.createOrder({
           productId: Number(data.productId),
+          // 自定义产品名称：留空则由后端沿用产品档案名称
+          productName: (data.productName || '').trim() || undefined,
           planQuantity: Number(data.planQuantity),
           planStartTime: localDateTimeValue(data.planStartTime),
           planEndTime: localDateTimeValue(data.planEndTime),
@@ -5589,6 +6434,10 @@
         order = createDemoOrder(data);
       }
       closeModal();
+      if (state.mode === 'live') {
+        // 新建草稿会改变「草稿」状态计数与趋势计划量，状态流水线要同步刷新。
+        await refreshDashboardSnapshots();
+      }
       window.location.hash = routeHref('orders', order.id);
       showToast(`已创建 ${order.orderNo}，当前状态为草稿。`);
     } catch (error) {
@@ -5670,6 +6519,23 @@
     } else if (action === 'resume') {
       task.status = 2;
       task.statusDesc = '进行中';
+      // 演示模式：暂停工单的阻断工序恢复时，工单同步恢复生产，
+      // 让状态流水线 / KPI / 待办一起即时反映这次操作（否则流水线看起来没变化）。
+      if (order && Number(order.status) === 5) {
+        const pausedStatus = order.status;
+        const pausedDesc = order.statusDesc;
+        order.status = 4;
+        order.statusDesc = '生产中';
+        state.statusEvents[order.id] = [{
+          fromStatus: pausedStatus,
+          fromStatusDesc: pausedDesc,
+          toStatus: 4,
+          toStatusDesc: '生产中',
+          reason: '阻断工序已恢复，工单恢复生产',
+          operatorName: state.user?.realName || '演示操作员',
+          operateTime: now
+        }, ...(state.statusEvents[order.id] || [])];
+      }
     } else if (action === 'complete') {
       task.status = task.isInspection ? 6 : 4;
       task.statusDesc = task.isInspection ? '待质检' : '已完成';
@@ -5741,6 +6607,9 @@
           if (action === 'start') markOrderStarted(order);
         }
         await refreshOrderDetail(task.orderId);
+        // 工序开始 / 完工 / 放行都可能连带改变工单状态，
+        // 状态流水线与各筛选计数必须一起刷新，否则会停在操作前的旧值。
+        await refreshDashboardSnapshots();
         // 质检放行 / 退回后队列会少一条，强制重载待质检列表，避免页面停留旧数据
         if (action === 'pass' || action === 'reject') {
           await loadInspectionQueue(true);
@@ -5854,11 +6723,16 @@
     }
     try {
       if (state.mode === 'live') {
+        const meta = orderStatusFromTarget(target);
         await api.transitionOrder(order.id, target, reason);
         closeModal();
-        await refreshOrderDetail(order.id);
-        await loadOrderStatusCounts();
+        // 乐观更新：先按本次流转把本地计数挪一格，工单状态流水线立刻跳变，
+        // 不必干等 /order/stats/status 往返；随后用服务端全库计数校正。
+        shiftOrderStatusCount(order.status, meta.code, meta.label);
         render();
+        await refreshOrderDetail(order.id);
+        // 流水线 / 筛选计数 / 不良构成 / 生产趋势统一重取，避免停留在操作前的快照。
+        await refreshDashboardSnapshots();
       } else {
         const meta = orderStatusFromTarget(target);
         const previousStatus = order.status;
@@ -5949,6 +6823,8 @@
         });
         closeModal();
         await refreshOrderDetail(task.orderId);
+        // 报工会累加不良数并可能让工单完工：不良构成、进度与状态流水线都要重取。
+        await refreshDashboardSnapshots();
       } else {
         task.reportedQuantity = Number(task.reportedQuantity || 0) + reportQuantity;
         task.qualifiedQuantity = Number(task.qualifiedQuantity || 0) + qualifiedQuantity;
@@ -5983,18 +6859,35 @@
     const data = Object.fromEntries(new FormData(form).entries());
     const errorBox = document.getElementById('login-error');
     const button = form.querySelector('button[type="submit"]');
+    // 切换账号：登录成功前不动当前会话；失败时把上一个账号的会话原样还原。
+    // 这样即使输错密码，也不会从「已连接」掉回演示数据。
+    const switching = form.dataset.switchAccount === '1' && api.isLive();
+    const previousAuth = switching ? api.getAuth() : null;
+    const submitLabel = switching ? '切换并连接' : '连接 MES';
     button.disabled = true;
     button.textContent = '正在连接';
     errorBox.classList.remove('is-visible');
     const restoreButton = () => {
       button.disabled = false;
-      button.textContent = '连接 MES';
+      button.textContent = submitLabel;
     };
 
     let payload;
     try {
       payload = await api.login(data.username, data.password);
     } catch (error) {
+      if (switching && previousAuth && previousAuth.token) {
+        // 切换失败：request() 遇到 401 会清掉 token，这里把旧会话还原，
+        // 保持 live 模式，只在表单内提示，不把用户踢回演示数据。
+        api.setAuth(previousAuth);
+        state.mode = 'live';
+        state.user = previousAuth.user || state.user;
+        render();
+        errorBox.textContent = `切换失败：${error.message}（仍以当前账号连接）`;
+        errorBox.classList.add('is-visible');
+        restoreButton();
+        return;
+      }
       // 连接守护：登录失败（多为后端离线/502）时不要清掉已存的 token，
       // 否则隧道恢复后无法自动切回 live。仅在明确的 401 时由 request() 清理。
       state.mode = 'demo';
@@ -6008,6 +6901,8 @@
 
     state.mode = 'live';
     state.user = payload.user || state.user;
+    // 换账号后必须清掉上一个身份的数据快照：角色不同，可见工单、库存与人员都不同。
+    if (switching) clearAccountScopedState();
     state.ordersPage = { current: 1, size: state.ordersPage.size || 10, total: 0, pages: 0 };
     state.orderStatusCounts = null;
     state.orderExtras = {};
@@ -6017,10 +6912,14 @@
       // 登录后落到该角色的工作面：质检员直接进「质检任务」，
       // 避免停在今天视图还要自己点侧栏。深链接（如 #/orders/5）不打断。
       const target = firstAllowedView();
-      if (target !== 'today' && parseRoute().view === 'today') {
+      const currentView = parseRoute().view;
+      // 切换账号后如果新角色看不到当前页，必须回到它自己的工作面。
+      if ((switching && !canView(currentView)) || (target !== 'today' && currentView === 'today')) {
         window.location.hash = `#/${target}`;
       }
-      showToast('网关已连接，正在读取真实工单。');
+      showToast(switching
+        ? `已切换为 ${state.user?.realName || state.user?.username || data.username}，数据已按新身份重新读取。`
+        : '网关已连接，正在读取真实工单。');
     } catch (error) {
       if (api.isLive()) {
         render();
@@ -6041,6 +6940,8 @@
     state.trace = clone(demo.trace);
     state.traceIsLive = false;
     state.quality = clone(demo.qualityQueue);
+    state.purchaseRequests = clone(demo.purchaseRequests);
+    state.purchaseFilter = 'all';
     state.inspectionLoading = false;
     state.inspectionLoaded = false;
     state.inspectionLoadError = '';
@@ -6084,6 +6985,63 @@
       error: '',
       loadedTabs: {}
     };
+    state.inventoryOps = {
+      orderIdInput: '',
+      belowSafety: null,
+      belowSafetyError: '',
+      reservations: null,
+      reservationsError: '',
+      issues: null,
+      issuesError: '',
+      issueItems: {},
+      busy: '',
+      reconcile: null
+    };
+    state.drawerTaskId = null;
+    state.sync = { running: false, error: '', syncedAt: null, sources: {} };
+  }
+
+  // 切换账号专用：清空上一个身份留在内存里的数据快照。
+  // 与 resetDemoState 的区别是「只清缓存、不灌演示数据」，
+  // 否则新账号加载完成前会闪一下演示工单，身份与数据对不上。
+  function clearAccountScopedState() {
+    state.orders = [];
+    state.tasksByOrder = {};
+    state.statusEvents = {};
+    state.inventory = [];
+    state.defectStats = null;
+    state.quality = [];
+    state.inspectionLoading = false;
+    state.inspectionLoaded = false;
+    state.inspectionLoadError = '';
+    state.inspectionLoadAt = 0;
+    state.currentOrderId = null;
+    state.orderFilter = 'all';
+    state.orderQuery = '';
+    state.ordersPage = { current: 1, size: state.ordersPage.size || 10, total: 0, pages: 0 };
+    state.orderStatusCounts = null;
+    state.trend = { orders: null, loaded: false, loading: false, error: '' };
+    state.orderExtras = {};
+    state.loadingOrder = null;
+    state.users = [];
+    state.usersState = { loading: false, loaded: false, error: '' };
+    state.basic.productList = [];
+    state.basic.productOptions = [];
+    state.basic.materialRows = [];
+    state.basic.materialOptions = [];
+    state.basic.selectedProductId = null;
+    state.basic.bomVersions = [];
+    state.basic.activeBom = null;
+    state.basic.bomDetail = null;
+    state.basic.bomTree = null;
+    state.basic.bomTreeError = '';
+    state.basic.requirementItems = null;
+    state.basic.routes = [];
+    state.basic.activeRoute = null;
+    state.basic.routeSteps = null;
+    state.basic.routeDetail = null;
+    state.basic.error = '';
+    state.basic.loadedTabs = {};
     state.inventoryOps = {
       orderIdInput: '',
       belowSafety: null,
@@ -6208,6 +7166,18 @@
     const orderId = actionElement.dataset.order;
     const taskId = actionElement.dataset.task;
 
+    // 工作台「数字随工单」卡片：演示快照（demo 源）上的工序按钮只用于展示，
+    // 不拿演示 id 调真实接口、也不触发权限闸（否则仓管点「完成工序」会弹无权限，
+    // 破坏「所有角色组件一致」）。live 源映射的是真实工序 id，正常放行。
+    const DEMO_CARD_ACTIONS = ['open-task', 'open-task-from-order', 'start-task',
+      'pause-task', 'resume-task', 'complete-task', 'pass-task', 'reject-task', 'report-task'];
+    if (travelerState.source === 'demo'
+        && actionElement.closest('#traveler-card')
+        && DEMO_CARD_ACTIONS.includes(action)) {
+      showToast('这是工作台演示随工单快照；请在「生产工单 / 工序任务」中操作真实数据。', 'warning');
+      return;
+    }
+
     // 统一权限闸：即使按钮因为页面未重渲染还留着，也按角色拒绝（服务端 RoleGuard 是最后一道）
     const requiredPermission = action === 'transition-order'
       ? ORDER_TARGET_PERMISSION[actionElement.dataset.target]
@@ -6224,6 +7194,10 @@
     switch (action) {
       case 'open-connection':
         openLoginModal();
+        break;
+      case 'switch-account':
+        // 保留当前连接，直接展示登录表单供换号；失败时 handleLogin 会还原旧会话。
+        openLoginModal({ switchAccount: true });
         break;
       case 'toggle-rail':
         toggleRail();
@@ -6518,6 +7492,25 @@
         render();
         showToast('已断开网关，回到演示数据。', 'warning');
         break;
+
+      /* ==================== 进货审批 ==================== */
+      case 'purchase-new':
+        openPurchaseModal();
+        break;
+      case 'purchase-approve':
+        decidePurchase(actionElement.dataset.id, 'approve');
+        break;
+      case 'purchase-reject':
+        decidePurchase(actionElement.dataset.id, 'reject');
+        break;
+      case 'purchase-cancel':
+        decidePurchase(actionElement.dataset.id, 'cancel');
+        break;
+      case 'purchase-filter':
+        state.purchaseFilter = actionElement.dataset.filter || 'all';
+        if (parseRoute().view !== 'purchase') window.location.hash = '#/purchase';
+        else render();
+        break;
       default:
         break;
     }
@@ -6542,6 +7535,8 @@
     else if (formName === 'issue' || formName === 'return') handleIssueSubmit(form);
     else if (formName === 'transition') handleTransition(form.dataset.order, form.dataset.target);
     else if (formName === 'login') handleLogin(form);
+    else if (formName === 'purchase') handlePurchaseSubmit(form);
+    else if (formName === 'purchase-decision') handlePurchaseDecisionSubmit(form);
   }
 
   function handleSearchInput(event) {
@@ -6693,6 +7688,16 @@
   document.addEventListener('submit', handleFormSubmit);
   document.addEventListener('input', handleSearchInput);
   document.addEventListener('keydown', handleKeydown);
+  // 新建工单：切换「生产产品」下拉时，把产品档案名称自动填进可编辑的「产品名称」框。
+  // 之所以单独监听 change 而不是复用 data-input：data-input 会触发整页 render()，
+  // 那会把刚打开的弹窗销毁。这里只改输入框的值，不动 DOM 结构。
+  document.addEventListener('change', (event) => {
+    const select = event.target.closest('form[data-form="create-order"] #new-product');
+    if (!select) return;
+    const form = select.closest('form[data-form="create-order"]');
+    const nameInput = form && form.querySelector('#new-product-name');
+    if (nameInput) nameInput.value = select.selectedOptions[0]?.dataset.name || '';
+  });
   document.getElementById('account-button').addEventListener('click', openLoginModal);
   scrim.addEventListener('click', closeDrawer);
 
@@ -6703,6 +7708,7 @@
       if (state.mode === 'live' && !findOrder(route.id)) state.loadingOrder = Number(route.id);
     }
     setMobileMoreOpen(false);
+    setNoticeOpen(false);
     closeDrawer();
     render();
     window.scrollTo({ top: 0, behavior: 'auto' });
@@ -6718,6 +7724,9 @@
     }
     if (state.mode === 'live' && route.view === 'today') {
       ensureTrendData();
+      // 从别的页面回到工作台时重拉一次状态计数：流水线读的是服务端全库统计，
+      // 不主动刷新就会停留在上一次进入工作台时的快照。
+      loadOrderStatusCounts().then(() => { render(); });
     }
   });
 
@@ -6739,6 +7748,8 @@
     /* localStorage 不可用时保持展开 */
   }
   render();
+  // 角色矩阵由后端统一下发（#3）；失败时沿用前端兜底常量，页面照常可用
+  loadPermissionMatrix();
   if (state.mode === 'live') syncStoredSession();
   // 直接以 #/basic 或 #/materials 打开时，hashchange 不会触发，这里补一次首屏加载
   if (state.mode === 'live') {

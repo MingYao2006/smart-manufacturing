@@ -8,6 +8,7 @@ import com.smart.production.entity.WorkTask;
 import com.smart.production.mapper.WorkTaskMapper;
 import com.smart.production.statemachine.WorkTaskStatus;
 import com.smart.production.support.FakeProductCatalog;
+import com.smart.production.support.FakeUserRoles;
 import com.smart.production.support.Stub;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -64,7 +65,7 @@ class WorkTaskServiceAccessTest {
                 Stub.rule("startTask", Stub.returnsInt(1)),
                 Stub.rule("selectPreviousStep", Stub.returns(null)),
                 Stub.rule("countByOrderId", Stub.returnsInt(1)));
-        service = new WorkTaskService(mapper.proxy(), FakeProductCatalog.healthy());
+        service = new WorkTaskService(mapper.proxy(), FakeProductCatalog.healthy(), FakeUserRoles.defaults());
     }
 
     @AfterEach
@@ -100,6 +101,62 @@ class WorkTaskServiceAccessTest {
         assertEquals(ErrorCode.FORBIDDEN.getCode(), e.getCode());
         assertTrue(e.getMessage().contains("仓库管理员"), e.getMessage());
         // 仍然只有计划员那一次落库
+        assertEquals(1, mapper.callCount("dispatch"));
+    }
+
+    @Test
+    @DisplayName("派工：普通工序只能派给车间操作工，派给质检员/计划员一律拒绝")
+    void dispatchToNonOperatorIsRejected() {
+        loginAs(RoleGuard.PLANNER, 2L);
+
+        // 目标只有质检员 → 普通工序不允许
+        service = new WorkTaskService(mapper.proxy(), FakeProductCatalog.healthy(),
+                FakeUserRoles.defaults().with(OTHER, RoleGuard.INSPECTOR));
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> service.dispatch(TASK_ID, dispatchTo(OTHER)));
+        assertEquals(ErrorCode.FORBIDDEN.getCode(), e.getCode());
+        assertTrue(e.getMessage().contains("车间操作工"), e.getMessage());
+        assertEquals(0, mapper.callCount("dispatch"));
+
+        // 计划员自派：即便该账号同时兼有操作工角色，也不允许把工序派给自己
+        service = new WorkTaskService(mapper.proxy(), FakeProductCatalog.healthy(),
+                FakeUserRoles.defaults().with(2L, RoleGuard.PLANNER, RoleGuard.OPERATOR));
+        BusinessException self = assertThrows(BusinessException.class,
+                () -> service.dispatch(TASK_ID, dispatchTo(2L)));
+        assertEquals(ErrorCode.FORBIDDEN.getCode(), self.getCode());
+        assertTrue(self.getMessage().contains("计划员"), self.getMessage());
+        assertEquals(0, mapper.callCount("dispatch"));
+    }
+
+    @Test
+    @DisplayName("派工：质检点工序只能派给质检员，派给操作工被拒")
+    void inspectionTaskDispatchRequiresInspector() {
+        task.setIsInspection(1);
+        loginAs(RoleGuard.PLANNER, 2L);
+        service = new WorkTaskService(mapper.proxy(), FakeProductCatalog.healthy(),
+                FakeUserRoles.defaults().with(ME, RoleGuard.OPERATOR)
+                        .with(OTHER, RoleGuard.INSPECTOR));
+
+        // 派给操作工 → 拒绝（质检点必须由质检员做）
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> service.dispatch(TASK_ID, dispatchTo(ME)));
+        assertEquals(ErrorCode.FORBIDDEN.getCode(), e.getCode());
+        assertTrue(e.getMessage().contains("质检员"), e.getMessage());
+        assertEquals(0, mapper.callCount("dispatch"));
+
+        // 派给质检员 → 放行并落库
+        assertEquals(TASK_ID, service.dispatch(TASK_ID, dispatchTo(OTHER)).getId());
+        assertEquals(1, mapper.callCount("dispatch"));
+    }
+
+    @Test
+    @DisplayName("派工：管理员可兜底接收任意工序的派工")
+    void adminCanReceiveAnyDispatch() {
+        loginAs(RoleGuard.PLANNER, 2L);
+        service = new WorkTaskService(mapper.proxy(), FakeProductCatalog.healthy(),
+                FakeUserRoles.defaults().with(OTHER, RoleGuard.ADMIN));
+
+        assertEquals(TASK_ID, service.dispatch(TASK_ID, dispatchTo(OTHER)).getId());
         assertEquals(1, mapper.callCount("dispatch"));
     }
 
@@ -152,6 +209,37 @@ class WorkTaskServiceAccessTest {
         BusinessException e = assertThrows(BusinessException.class,
                 () -> service.pauseTask(TASK_ID, ME));
         assertEquals(ErrorCode.FORBIDDEN.getCode(), e.getCode());
+    }
+
+    @Test
+    @DisplayName("质检员可以开工/完成派给自己的质检点工序（如老化测试）")
+    void inspectorCanExecuteOwnInspectionTask() {
+        task.setOperatorId(ME);
+        task.setIsInspection(1);
+        loginAs(RoleGuard.INSPECTOR, ME);
+
+        // 走到 CAS 说明角色 + 归属两道校验都过了（PENDING → IN_PROGRESS）
+        service.startTask(TASK_ID, ME);
+        assertEquals(1, mapper.callCount("startTask"));
+
+        // 进行中的质检点工序由质检员自己完成 → 进入待质检（WAIT_INSPECTION）
+        task.setStatus(WorkTaskStatus.IN_PROGRESS.getCode());
+        service.completeTask(TASK_ID, ME);
+        assertEquals(1, mapper.callCount("finishTask"));
+    }
+
+    @Test
+    @DisplayName("质检员不能执行派给别人的工序")
+    void inspectorCannotExecuteOthersTask() {
+        task.setOperatorId(OTHER);
+        task.setIsInspection(1);
+        loginAs(RoleGuard.INSPECTOR, ME);
+
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> service.startTask(TASK_ID, ME));
+        assertEquals(ErrorCode.FORBIDDEN.getCode(), e.getCode());
+        assertTrue(e.getMessage().contains("只能操作派给本人的工序"), e.getMessage());
+        assertEquals(0, mapper.callCount("startTask"));
     }
 
     @Test

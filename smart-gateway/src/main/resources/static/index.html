@@ -7,7 +7,7 @@
   <meta name="description" content="SmartMES 生产运营工作台：查看生产指标、工单、工序任务、库存与批次追溯。">
   <title>SmartMES · 生产运营工作台</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css?v=20261113c">
 </head>
 <body>
   <a class="skip-link" href="#app">跳到主要内容</a>
@@ -30,6 +30,9 @@
     </symbol>
     <symbol id="i-catalog" viewBox="0 0 24 24">
       <path d="M4 6.5 12 3l8 3.5-8 3.5zM4 12l8 3.5 8-3.5M4 17.5 12 21l8-3.5"/>
+    </symbol>
+    <symbol id="i-purchase" viewBox="0 0 24 24">
+      <path d="M3.5 8 12 4l8.5 4v8L12 20l-8.5-4zM3.5 8l8.5 4 8.5-4M12 12v8M7 6l10 4.7"/>
     </symbol>
     <symbol id="i-quality" viewBox="0 0 24 24">
       <path d="M12 3.5 20 7v5.5c0 4.7-3.2 7.1-8 8.5-4.8-1.4-8-3.8-8-8.5V7zM8.5 12l2.3 2.4 4.9-5"/>
@@ -90,6 +93,7 @@
         <a href="#/tasks" data-nav="tasks"><svg><use href="#i-tasks"/></svg><span>工序任务</span></a>
         <p class="rail-group">物料管理</p>
         <a href="#/materials" data-nav="materials"><svg><use href="#i-material"/></svg><span>库存与物料</span></a>
+        <a href="#/purchase" data-nav="purchase"><svg><use href="#i-purchase"/></svg><span>进货审批</span></a>
         <p class="rail-group">质量管理</p>
         <a href="#/quality" data-nav="quality"><svg><use href="#i-quality"/></svg><span>质检任务</span></a>
         <a href="#/trace" data-nav="trace"><svg><use href="#i-trace"/></svg><span>批次追溯</span></a>
@@ -103,7 +107,7 @@
         <button class="rail-collapse" type="button" data-action="toggle-rail" aria-label="收起导航栏" aria-expanded="true">
           <svg><use href="#i-chevron"/></svg><span>收起侧栏</span>
         </button>
-        <span class="rail-version">v1.0</span>
+        <span class="rail-version">v1.3 · 工作台统一</span>
       </div>
     </aside>
 
@@ -184,6 +188,10 @@
         <svg aria-hidden="true"><use href="#i-quality"/></svg>
         <span><b>质检任务</b><small>判定放行或退回返工</small></span>
       </a>
+      <a href="#/purchase" data-nav="purchase">
+        <svg aria-hidden="true"><use href="#i-purchase"/></svg>
+        <span><b>进货审批</b><small>仓管申请 · 管理员/计划员或签</small></span>
+      </a>
     </nav>
   </div>
 
@@ -223,8 +231,8 @@
     <div class="noscript">此工作台需要启用 JavaScript 才能读取工单与工序数据。</div>
   </noscript>
 
-  <script src="./data.js"></script>
-  <script src="./api.js"></script>
-  <script src="./app.js"></script>
+  <script src="./data.js?v=20261113c"></script>
+  <script src="./api.js?v=20261113c"></script>
+  <script src="./app.js?v=20261113c"></script>
 </body>
 </html>

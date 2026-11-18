@@ -11,6 +11,7 @@ import com.smart.production.mapper.WorkTaskMapper;
 import com.smart.production.statemachine.WorkTaskStatus;
 import com.smart.production.support.FakeMessagePublisher;
 import com.smart.production.support.FakeProductCatalog;
+import com.smart.production.support.FakeUserRoles;
 import com.smart.production.support.Stub;
 import com.smart.production.support.Stub.Recorder;
 import org.junit.jupiter.api.BeforeEach;
@@ -105,7 +106,7 @@ class ProductionReportServiceTest {
                 Stub.rule("finishTask", 4, Stub.returnsInt(1)),
                 Stub.rule("updateStatusCas", 4, Stub.returnsInt(1)));
         WorkTaskService workTaskService = new WorkTaskService(
-                forTaskService.proxy(), FakeProductCatalog.empty());
+                forTaskService.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         reportService = new ProductionReportService(workTaskMapper.proxy(),
                 reportMapper.proxy(), workTaskService, messagePublisher,
@@ -259,7 +260,7 @@ class ProductionReportServiceTest {
         Recorder<WorkTaskMapper> forTaskService = Recorder.of(WorkTaskMapper.class,
                 Stub.rule("selectById", 1, inv -> task));
         WorkTaskService workTaskService = new WorkTaskService(
-                forTaskService.proxy(), FakeProductCatalog.empty());
+                forTaskService.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
         reportService = new ProductionReportService(workTaskMapper.proxy(),
                 reportMapper.proxy(), workTaskService, messagePublisher,
                 FakeProductCatalog.empty());
@@ -321,7 +322,7 @@ class ProductionReportServiceTest {
         Recorder<WorkTaskMapper> mapper = Recorder.of(WorkTaskMapper.class,
                 Stub.rule("selectById", 1, inv -> full),
                 Stub.rule("finishTask", 4, Stub.returnsInt(1)));
-        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty());
+        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         WorkTaskStatus after = svc.afterReport(TASK_ID, 4L);
 
@@ -348,7 +349,7 @@ class ProductionReportServiceTest {
         Recorder<WorkTaskMapper> mapper = Recorder.of(WorkTaskMapper.class,
                 Stub.rule("selectById", 1, inv -> full),
                 Stub.rule("finishTask", 4, Stub.returnsInt(1)));
-        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty());
+        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         WorkTaskStatus after = svc.afterReport(TASK_ID, 4L);
         assertEquals(WorkTaskStatus.COMPLETED, after);
@@ -369,7 +370,7 @@ class ProductionReportServiceTest {
 
         Recorder<WorkTaskMapper> mapper = Recorder.of(WorkTaskMapper.class,
                 Stub.rule("selectById", 1, inv -> partial));
-        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty());
+        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         WorkTaskStatus after = svc.afterReport(TASK_ID, 4L);
         assertEquals(WorkTaskStatus.IN_PROGRESS, after);
@@ -399,7 +400,7 @@ class ProductionReportServiceTest {
         Recorder<WorkTaskMapper> mapper = Recorder.of(WorkTaskMapper.class,
                 Stub.rule("selectById", 1, inv -> current),
                 Stub.rule("selectPreviousStep", 2, inv -> prev));
-        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty());
+        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> svc.startTask(2L, 4L));
@@ -440,7 +441,7 @@ class ProductionReportServiceTest {
                     startCalled[0] = true;
                     return 1;
                 }));
-        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty());
+        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         var result = svc.startTask(2L, 4L);
         assertNotNull(result);
@@ -468,7 +469,7 @@ class ProductionReportServiceTest {
                     startCalled[0] = true;
                     return 1;
                 }));
-        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty());
+        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         var result = svc.startTask(1L, 4L);
         assertNotNull(result);
@@ -495,7 +496,7 @@ class ProductionReportServiceTest {
         Recorder<WorkTaskMapper> mapper = Recorder.of(WorkTaskMapper.class,
                 Stub.rule("selectById", 1, inv -> current),
                 Stub.rule("selectPreviousStep", 2, inv -> prev));
-        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty());
+        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> svc.startTask(3L, 4L));
@@ -530,7 +531,7 @@ class ProductionReportServiceTest {
                     startCalled[0] = true;
                     return 1;
                 }));
-        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty());
+        WorkTaskService svc = new WorkTaskService(mapper.proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
 
         var result = svc.startTask(2L, 4L);
         assertEquals(WorkTaskStatus.IN_PROGRESS.getCode(), result.getStatus());
@@ -542,7 +543,7 @@ class ProductionReportServiceTest {
     @DisplayName("报工单号应形如 RP+日期+序列，且两次生成不重复")
     void testNewReportNo() {
         WorkTaskService svc = new WorkTaskService(
-                Recorder.of(WorkTaskMapper.class).proxy(), FakeProductCatalog.empty());
+                Recorder.of(WorkTaskMapper.class).proxy(), FakeProductCatalog.empty(), FakeUserRoles.defaults());
         String a = svc.newReportNo();
         String b = svc.newReportNo();
         assertNotNull(a);

@@ -131,7 +131,11 @@ public class ProductionOrderService {
         order.setPlanId(dto.getPlanId());
         order.setProductId(product.getId());
         order.setProductCode(product.getProductCode());
-        order.setProductName(product.getProductName());
+        // 计划员可自定义本工单显示的产品名称；留空则沿用产品档案名称。
+        // 注意 productId / BOM / 工艺路线仍以档案为准，名称只是展示快照，不影响校验。
+        String customName = dto.getProductName();
+        order.setProductName(customName != null && !customName.isBlank()
+                ? customName.trim() : product.getProductName());
         order.setSpec(product.getSpec());
         order.setUnit(product.getUnit());
         // 🔑 快照：锁定 BOM / 工艺路线版本
