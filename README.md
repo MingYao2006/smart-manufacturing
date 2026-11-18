@@ -6,7 +6,7 @@
 [![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.3.6-6db33f?style=flat-square)](https://spring.io/projects/spring-boot)
 [![Spring Cloud](https://img.shields.io/badge/Spring_Cloud-2023.0.1-0a7bbb?style=flat-square)](https://spring.io/projects/spring-cloud)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0-4479a1?style=flat-square)](https://www.mysql.com/)
-[![Tests](https://img.shields.io/badge/tests-127_passed-success?style=flat-square)](#验证结果)
+[![Tests](https://img.shields.io/badge/tests-171_passed-success?style=flat-square)](#验证结果)
 [![Docker](https://img.shields.io/badge/Docker_Compose-ready-2496ed?style=flat-square)](docker-compose.yml)
 
 [项目简介](#项目简介) · [项目界面](#项目界面) · [业务闭环](#业务闭环) · [系统架构](#系统架构) · [快速开始](#快速开始) · [关键设计](#关键设计) · [文档索引](#文档索引)
@@ -62,14 +62,14 @@ SmartMES 是一个面向**离散制造**场景的 MES 工程作品。它不试�
 | 生产工单 | 库存与物料 |
 |:---:|:---:|
 | ![生产工单](docs/images/workbench-orders.png) | ![库存与物料](docs/images/workbench-materials.png) |
-| 按状态、交期与阻断风险组织工单，支持筛选和新建 | 现有量、预留量、可用量来自同一套库存模型，缺口直接指向补料动作 |
+| 按状态、交期与阻断风险组织工单，支持筛选和新建；已取消 / 已关闭的终态工单同样保留在列表中，可直接点开查看工艺路线与状态流转 | 现有量、预留量、可用量来自同一套库存模型，缺口直接指向补料动作，并可一键发起进货审批 |
 
 | 质检任务 | 批次追溯 |
 |:---:|:---:|
 | ![质检任务](docs/images/workbench-quality.png) | ![批次追溯](docs/images/workbench-trace.png) |
-| 质检点阻断后道工序，放行或退回都有明确结果 | 从成品追到原料与供应商，也能从原料反查受影响成品 |
+| 以质检员身份登录时可见；质检点阻断后道工序，放行或退回都有明确结果 | 从成品追到原料与供应商，也能从原料反查受影响成品 |
 
-> 截图基于内置演示数据，时间与状态会随本地环境变化。
+> 截图基于内置演示数据，时间与状态会随本地环境变化。侧栏只显示当前角色有权访问的模块：上图为生产计划员视角，质检任务一图为质检员视角。
 
 ### 工作台不是装饰层
 
@@ -84,11 +84,12 @@ SmartMES 是一个面向**离散制造**场景的 MES 工程作品。它不试�
 | 路由 | 内容 |
 |---|---|
 | `#/today` | 当前执行、KPI、生产趋势、工单状态、生产动态、批次脉络 |
-| `#/orders` | 工单列表、状态筛选、分页、创建工单 |
+| `#/orders` | 工单列表、状态筛选、分页、创建工单（含已取消 / 已关闭的终态工单） |
 | `#/orders/:id` | 工艺路线、流转历史、齐套、报工、质检与状态操作 |
 | `#/tasks` | 工序任务队列、开始 / 暂停 / 完成、派工、报工 |
 | `#/materials` | 三量库存、安全库存、预留、领退料、对账 |
-| `#/basic` | 产品、物料、BOM、工艺路线只读视图 |
+| `#/purchase` | 进货审批单的创建与审批 |
+| `#/basic` | 产品、物料、BOM、工艺路线（管理员可增改，其他角色只读） |
 | `#/quality` | 待质检任务、放行与退回 |
 | `#/trace` | 正向与反向批次追溯 |
 
@@ -374,7 +375,7 @@ python -m http.server 4173 --directory smart-gateway/src/main/resources/static
 
 | 验证项 | 结果 | 证据 |
 |---|---|---|
-| 单元测试 | **127 / 127 通过** | 覆盖状态机、报工、库存、追溯、认证与需求计算 |
+| 单元测试 | **171 / 171 通过** | 覆盖状态机、报工、库存、追溯、认证、权限矩阵与需求计算 |
 | 完整业务闭环 | **50 / 50 检查点** | `demo/FullChainDemo.java` 经网关执行 20 个步骤 |
 | 库存并发 | **100 并发零超发** | 库存 50 时精确 50 成功、50 失败 |
 | 事务回滚 | **多物料预留全回滚** | 第 3 个物料不足时，前两个物料预留恢复为 0 |
@@ -423,13 +424,13 @@ smart-manufacturing/
 
 | 指标 | 数量 |
 |---|---:|
-| 生产 Java 代码 | 114 个文件 / 9,542 行 |
-| 测试 Java 代码 | 14 个文件 / 2,706 行 |
-| SQL 脚本 | 8 个文件 / 956 行 |
-| 工作台静态资源 | 6 个文件 / 6,400 行 |
-| 数据表 | 27 张，分布在 5 个独立数据库 |
-| REST 端点 | 95 个，来自 11 个 Controller |
-| 单元测试 | 127 个用例 |
+| 生产 Java 代码 | 128 个文件 / 13,140 行 |
+| 测试 Java 代码 | 20 个文件 / 4,008 行 |
+| SQL 脚本 | 10 个文件 / 1,232 行 |
+| 工作台静态资源 | 5 个文件 / 18,085 行 |
+| 数据表 | 29 张，分布在 5 个独立数据库 |
+| REST 端点 | 102 个，来自 12 个 Controller |
+| 单元测试 | 171 个用例 |
 | 完整闭环检查点 | 50 个 |
 
 ---
